@@ -11,8 +11,18 @@ Three components were added to the project:
 | Component | Port | Language | Purpose |
 |---|---|---|---|
 | `transactions-api` | 8010 | Python / FastAPI | Stores and serves transaction data; validates OBO JWTs |
-| `transactions-agent` | 8011 | Python / FastAPI + AutoGen | AI agent via WebSocket; triggers OBO consent flow |
+| `transactions-agent` | 8011 | Python / FastAPI | AI agent via WebSocket; triggers OBO consent flow |
 | `app` (modified) | 5173 | React / JSX | `/transactions` page with chat UI and consent popup |
+
+The `transactions-agent` folder contains **three interchangeable implementations** of the same agent, each using a different AI framework:
+
+| Subfolder | Framework | Key dependency |
+|---|---|---|
+| `autogen/` | Microsoft AutoGen | `autogen-agentchat`, `autogen-ext` |
+| `strands/` | AWS Strands Agents | `strands-agents`, `boto3` (supports Bedrock) |
+| `langchain/` | LangChain | `langchain`, `langchain-openai`, `langchain-anthropic` |
+
+All three share the same `app/` (prompt, tools) and `auth/` (OBO token flow) layers at the `transactions-agent/` root.
 
 ---
 
@@ -34,11 +44,11 @@ In-memory store (keyed by user sub)
 
 ### Security Pattern — On-Behalf-Of (OBO) Token Flow
 
-The agent uses the same `SecureFunctionTool` pattern from the Gardeo Hotels project:
+The agent uses the same secure tool pattern from the Gardeo Hotels project — each framework has its own `SecureTool` wrapper (`SecureFunctionTool` / `SecureStrandsTool` / `SecureLangChainTool`) that implements the same flow:
 
 1. User sends a message (e.g. *"Show me my recent transactions"*)
-2. The AutoGen agent calls the `GetMyTransactions` tool
-3. `SecureFunctionTool` intercepts — the `token` parameter is **never shown to the LLM**
+2. The agent calls the `GetMyTransactions` tool
+3. The secure tool wrapper intercepts — the `token` parameter is **never shown to the LLM**
 4. No cached OBO token exists → agent sends an `auth_request` WebSocket message to the frontend
 5. Frontend displays an "Authorise Access" button with the required scopes
 6. User clicks → OAuth popup opens at Asgardeo (`/authorize` with PKCE)
@@ -168,6 +178,9 @@ OPENAI_API_KEY=<OPENAI_API_KEY>
 # GATEWAY_TOKEN_ENDPOINT=<GATEWAY_TOKEN_ENDPOINT>
 # GATEWAY_CLIENT_ID=<GATEWAY_CLIENT_ID>
 # GATEWAY_CLIENT_SECRET=<GATEWAY_CLIENT_SECRET>
+
+# Disable TLS certificate verification — use only for localhost dev with self-signed certs
+# SSL_VERIFY=false
 ```
 
 ### `app/public/config.js`
@@ -184,7 +197,7 @@ TRANSACTIONS_AGENT_URL: "ws://localhost:8011"
 
 ### Docker / Podman (recommended)
 
-The `docker-compose.yml` at the repo root orchestrates both services on a shared `bank-network`.
+The `docker-compose.yml` uses **Docker Compose profiles** so you choose which agent implementation to run. Only one agent listens on port 8011 at a time.
 
 **Important:** `llm_config.yaml` is mounted into the agent container from `~/podman_share/llm_config.yaml` on the host (`:ro,z` — read-only, SELinux relabelled for Podman compatibility). This keeps the config outside the image so you can change the LLM provider or gateway settings without rebuilding.
 
@@ -193,14 +206,14 @@ The `docker-compose.yml` at the repo root orchestrates both services on a shared
 mkdir -p ~/podman_share
 cp llm_config.yaml ~/podman_share/llm_config.yaml
 
-# 2. Build and start both services (from the repo root)
-docker compose up --build -d
+# 2. Build and start — choose a profile: autogen | strands | langchain
+docker compose --profile langchain up --build -d
 # or with Podman:
-podman-compose up --build -d
+podman compose --profile strands up --build -d
 
 # View logs
 docker compose logs -f transactions-api
-docker compose logs -f transactions-agent
+docker compose logs -f bank-transactions-agent
 
 # Stop
 docker compose down
@@ -215,17 +228,25 @@ docker compose down
 cd transactions-api
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-export PYTHONPATH=$(pwd)
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8010
 ```
 
-**Transactions Agent:**
+**Transactions Agent** — run from inside the chosen implementation subfolder so both `service.py` and `tool.py` are on the Python path alongside the shared `app/` and `auth/` layers:
+
 ```bash
 cd transactions-agent
+
+# Create a venv and install dependencies for the chosen implementation
 python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-export PYTHONPATH=$(pwd)
-uvicorn app.service:app --reload --host 0.0.0.0 --port 8011
+pip install -r langchain/requirements.txt   # or autogen/ or strands/
+
+# Run — PYTHONPATH includes both the repo root (for app/ and auth/)
+# and the implementation subfolder (for tool.py)
+PYTHONPATH=$(pwd):$(pwd)/langchain uvicorn langchain.service:app --reload --port 8011
+# For autogen:
+# PYTHONPATH=$(pwd):$(pwd)/autogen uvicorn autogen.service:app --reload --port 8011
+# For strands:
+# PYTHONPATH=$(pwd):$(pwd)/strands uvicorn strands.service:app --reload --port 8011
 ```
 
 **Frontend:**
@@ -301,18 +322,21 @@ The generator creates deterministic data seeded by `hash(user_sub)` — the same
 Edit `llm_config.yaml` at the repo root to switch providers:
 
 ```yaml
-# provider: openai | gemini | anthropic
+# provider: openai | gemini | anthropic | bedrock
 provider: openai
 # model: gpt-4o-mini   # uncomment to override the default
 ```
 
 Default models per provider:
 
-| Provider | Default model |
-|---|---|
-| openai | gpt-4o-mini |
-| gemini | gemini-2.5-flash-lite |
-| anthropic | claude-sonnet-4-5-20250929 |
+| Provider | Default model | Supported by |
+|---|---|---|
+| openai | gpt-4o-mini | autogen, strands, langchain |
+| gemini | gemini-2.5-flash-lite | autogen, strands, langchain |
+| anthropic | claude-sonnet-4-5-20250929 | autogen, strands, langchain |
+| bedrock | eu.anthropic.claude-sonnet-4-6-20250514-v1:0 | **strands only** |
+
+> **Bedrock:** uses `AWS_DEFAULT_REGION` (default `eu-north-1`). Without gateway, calls the Bedrock Converse API directly via `boto3` — AWS credentials must be available in the environment. With `gateway.enabled: true`, calls are routed via the WSO2 gateway using OAuth bearer tokens (no AWS credentials needed).
 
 ### WSO2 API Gateway (optional)
 
@@ -359,8 +383,8 @@ To fall back to direct provider mode, set `gateway.enabled: false` (or remove th
 
 ```
 bank-of-asgard/
-├── docker-compose.yml               # Orchestrates both Python services
-├── llm_config.yaml                  # LLM provider selection
+├── docker-compose.yml               # Orchestrates services; use --profile to pick an agent
+├── llm_config.yaml                  # LLM provider selection (mounted at runtime)
 │
 ├── transactions-api/                # FastAPI — transaction data service
 │   ├── app/
@@ -372,45 +396,44 @@ bank-of-asgard/
 │   ├── Dockerfile
 │   └── .env.example
 │
-├── transactions-agent/              # FastAPI + AutoGen — AI agent service
-│   ├── auth/                        # OAuth plumbing (copied from gardeo-hotels)
+├── transactions-agent/              # AI agent — three interchangeable implementations
+│   ├── app/                         # Shared across all implementations
+│   │   ├── tools.py                 # get_my_transactions (OBO-protected HTTP call)
+│   │   └── prompt.py                # Banking-focused system prompt
+│   ├── auth/                        # Shared OAuth plumbing
 │   │   ├── auth_manager.py          # AutogenAuthManager: OBO + agent token flows
 │   │   ├── auth_schema.py           # Validates manager has message_handler for OBO
 │   │   ├── models.py                # OAuthTokenType, AuthConfig, AuthRequestMessage
 │   │   └── token_manager.py         # TTLCache-based per-session token storage
-│   ├── autogen/
-│   │   └── tool.py                  # SecureFunctionTool: strips token from LLM view
-│   ├── app/
+│   ├── autogen/                     # AutoGen implementation
 │   │   ├── service.py               # WebSocket /chat + /callback endpoints
-│   │   ├── tools.py                 # get_my_transactions (OBO-protected)
-│   │   └── prompt.py                # Banking-focused system prompt
-│   ├── requirements.txt
-│   ├── Dockerfile
+│   │   ├── tool.py                  # SecureFunctionTool: strips token from LLM view
+│   │   ├── requirements.txt
+│   │   └── Dockerfile               # Build context: ./transactions-agent
+│   ├── strands/                     # AWS Strands implementation (supports Bedrock)
+│   │   ├── service.py
+│   │   ├── tool.py                  # SecureStrandsTool
+│   │   ├── requirements.txt
+│   │   └── Dockerfile
+│   ├── langchain/                   # LangChain implementation
+│   │   ├── service.py
+│   │   ├── tool.py                  # SecureLangChainTool
+│   │   ├── requirements.txt
+│   │   └── Dockerfile
 │   └── .env.example
 │
-├── server/                          # Node.js / Express backend (modified)
-│   ├── server.js                    # MODIFIED — auto role assignment + provisioning on signup
-│   ├── config.js                    # MODIFIED — added TRANSACTIONS_API_URL env variable
-│   ├── middleware/
-│   │   └── auth.js                  # MODIFIED — added internal_role_mgt_view + internal_role_mgt_users_update + admin_provision scopes
-│   └── controllers/
-│       └── business.js              # MODIFIED — added getRoleIdByName, addUserToRole
+├── server/                          # Node.js / Express backend
+│   ├── server.js                    # Auto role assignment + provisioning on signup
+│   └── middleware/
+│       └── auth.js
 │
-└── app/                             # React frontend (modified)
+└── app/                             # React frontend
     └── src/
         ├── pages/
-        │   └── transactions.jsx     # NEW — /transactions page (chat + info panel)
-        ├── components/
-        │   ├── transactions/
-        │   │   └── ChatComponent.jsx # NEW — WebSocket chat + OBO consent popup
-        │   └── user-profile/
-        │       ├── view-profile.jsx  # MODIFIED — Close Account moved to bottom-right
-        │       └── view/
-        │           └── bank-account-card.jsx # MODIFIED — Transaction Assistant button added
-        ├── constants/
-        │   └── app-constants.jsx    # MODIFIED — added TRANSACTIONS route
-        └── util/
-            └── environment-util.js  # MODIFIED — added TRANSACTIONS_AGENT_URL
+        │   └── transactions.jsx     # /transactions page (chat + info panel)
+        └── components/
+            └── transactions/
+                └── ChatComponent.jsx # WebSocket chat + OBO consent popup
 ```
 
 ---
@@ -438,7 +461,7 @@ bank-of-asgard/
 
 | Property | Mechanism |
 |---|---|
-| Token never visible to LLM | `SecureFunctionTool` strips `token: OAuthToken` from function schema before passing to AutoGen |
+| Token never visible to LLM | Each framework's `SecureTool` wrapper strips `token: OAuthToken` from the function schema before passing to the LLM |
 | Per-session isolation | Each WebSocket gets its own `AutogenAuthManager` + `TokenManager` — no cross-user token leakage |
 | Replay protection | `_pending_auths.pop(state)` atomically removes entry; duplicate callbacks are rejected |
 | Authorization timeout | `asyncio.wait_for(future, timeout=300s)` — agent does not hang if user closes the popup |

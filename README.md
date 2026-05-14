@@ -246,11 +246,11 @@ CORS_ORIGINS=http://localhost:5173,http://localhost:3002
 
 Edit `llm_config.yaml` at the repo root to select the LLM provider:
 ```yaml
-# provider: openai | gemini | anthropic
+# provider: openai | gemini | anthropic | bedrock
 provider: openai
 # model: gpt-4o-mini   # uncomment to override the default
 ```
-Default models: `openai → gpt-4o-mini`, `gemini → gemini-2.5-flash-lite`, `anthropic → claude-sonnet-4-5-20250929`.
+Default models: `openai → gpt-4o-mini`, `gemini → gemini-2.5-flash-lite`, `anthropic → claude-sonnet-4-5-20250929`, `bedrock → eu.anthropic.claude-sonnet-4-6-20250514-v1:0` (strands agent only).
 
 **Optional — WSO2 API Gateway:** to route LLM calls via a gateway instead of a direct API key:
 ```yaml
@@ -289,11 +289,14 @@ OPENAI_API_KEY=<OPENAI_API_KEY>
 # GEMINI_API_KEY=<GEMINI_API_KEY>
 # ANTHROPIC_API_KEY=<ANTHROPIC_API_KEY>
 
-# WSO2 Agent Manager — optional, only needed when running with instrumentation (see below)
-# Requires amp-instrumentation and opentelemetry-instrumentation-langchain<0.53.0 (already pinned in requirements.txt)
-# AMP_OTEL_ENDPOINT=http://host.containers.internal:22893/otel   # use this when running in a container
-# AMP_OTEL_ENDPOINT=http://localhost:22893/otel                   # use this when running natively
-# AMP_AGENT_API_KEY=<AMP_AGENT_API_KEY>
+# WSO2 API Gateway (only when gateway.enabled: true in llm_config.yaml)
+# GATEWAY_BASE_URL=<GATEWAY_BASE_URL>
+# GATEWAY_TOKEN_ENDPOINT=<GATEWAY_TOKEN_ENDPOINT>
+# GATEWAY_CLIENT_ID=<GATEWAY_CLIENT_ID>
+# GATEWAY_CLIENT_SECRET=<GATEWAY_CLIENT_SECRET>
+
+# Disable TLS certificate verification — use only for localhost dev with self-signed certs
+# SSL_VERIFY=false
 ```
 
 2. Add the agent WebSocket URL to `app/public/config.js`:
@@ -302,29 +305,29 @@ OPENAI_API_KEY=<OPENAI_API_KEY>
 TRANSACTIONS_AGENT_URL: "ws://localhost:8011"
 ```
 
-> [!NOTE]
-> WSO2 Agent Manager instrumentation is not supported on this branch (AutoGen is not compatible with the OpenTelemetry LangChain instrumentation package). To test Agent Manager integration, switch to the `feat/langchain-migration` branch.
-
 ### Running with Docker / Podman (recommended)
 
-1. Copy `llm_config.yaml` to `~/podman_share/llm_config.yaml` on the host (this directory is mounted by default when you create the Podman machine) - The compose file mounts this path into the agent container so the config file is kept outside the image and never rebuilt on change.
+The compose file uses **profiles** to select which agent implementation to run (`autogen`, `strands`, or `langchain`). Only one agent listens on port 8011 at a time.
+
+1. Copy `llm_config.yaml` to `~/podman_share/llm_config.yaml`:
 
 ```bash
 mkdir -p ~/podman_share
 cp llm_config.yaml ~/podman_share/llm_config.yaml
 ```
 
-2. Start both services from the repo root
+2. Start both services, specifying the agent profile:
 
 ```bash
-podman compose up --build -d
+# Choose one: autogen | strands | langchain
+podman compose --profile langchain up --build -d
 ```
 
 3. View logs
 
 ```bash
 podman compose logs -f transactions-api
-podman compose logs -f transactions-agent
+podman compose logs -f bank-transactions-agent
 ```
 
 4. Stop
@@ -343,10 +346,15 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8010
 ```
 
-2. From within the `transactions-agent/` directory:
+2. From within the `transactions-agent/` directory — pick an implementation:
 
 ```bash
 python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.service:app --reload --port 8011
+pip install -r langchain/requirements.txt   # or autogen/ or strands/
+
+# PYTHONPATH must include both transactions-agent/ (for app/ and auth/)
+# and the chosen subfolder (for tool.py)
+PYTHONPATH=$(pwd):$(pwd)/langchain uvicorn langchain.service:app --reload --port 8011
+# For autogen:  PYTHONPATH=$(pwd):$(pwd)/autogen  uvicorn autogen.service:app  --reload --port 8011
+# For strands:  PYTHONPATH=$(pwd):$(pwd)/strands  uvicorn strands.service:app  --reload --port 8011
 ```
