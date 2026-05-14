@@ -1,45 +1,50 @@
-import anthropic as _anthropic_sdk
 import asyncio
 import logging
 import os
 import time
-from functools import cached_property
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal, Dict, List, Any
+from typing import Literal, Dict
 
+import botocore
 import httpx
-
-# Configure logging before asgardeo imports so the patch is in place when its clients are created
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+import openai
 import yaml
+from botocore.config import Config as BotocoreConfig
 from fastapi.responses import HTMLResponse
-from langchain.agents import create_agent
-from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage, AIMessage
-from langchain_openai import ChatOpenAI
+from strands import Agent
+from strands.models import AnthropicModel, BedrockModel, OpenAIModel
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, HTTPException
-from pydantic import BaseModel, PrivateAttr
+from pydantic import BaseModel
 from starlette.websockets import WebSocketDisconnect
 
 from app.prompt import agent_system_prompt
 from app.tools import get_my_transactions
-from langchain_layer.tool import SecureLangChainTool
+from tool import SecureStrandsTool
 from auth import AuthRequestMessage, AutogenAuthManager, AuthSchema, AuthConfig, OAuthTokenType
 
 from asgardeo_ai import AgentConfig
 from asgardeo.models import AsgardeoConfig
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
 # Suppress verbose third-party INFO logs
-logging.getLogger("langchain").setLevel(logging.WARNING)
-logging.getLogger("langchain_core").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("anthropic").setLevel(logging.WARNING)
+logging.getLogger("strands").setLevel(logging.WARNING)
+
+# Suppress known strands/pydantic incompatibility warning for ParsedTextBlock (citations)
+import warnings
+warnings.filterwarnings("ignore", message=".*PydanticSerializationUnexpectedValue.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*ParsedTextBlock.*", category=UserWarning)
 
 load_dotenv()
 
@@ -54,6 +59,11 @@ class GatewayTokenManager:
         self._token: str | None = None
         self._expires_at: float = 0.0
         self._lock = asyncio.Lock()
+
+    @property
+    def cached_token(self) -> str | None:
+        """Return the in-memory cached token without triggering a refresh."""
+        return self._token
 
     async def get_token(self) -> str:
         async with self._lock:
@@ -83,26 +93,6 @@ class GatewayBearerAuth(httpx.Auth):
         token = await self._manager.get_token()
         request.headers["Authorization"] = f"Bearer {token}"
         yield request
-
-
-class GatewayChatAnthropic(ChatAnthropic):
-    """ChatAnthropic subclass that injects gateway Bearer auth via a custom httpx client.
-
-    ChatAnthropic builds its own internal httpx client and does not expose http_client
-    as a constructor parameter. This subclass overrides _async_client to inject our
-    GatewayBearerAuth handler so tokens are refreshed transparently on each request.
-    """
-
-    _gw_auth: GatewayBearerAuth = PrivateAttr()
-
-    def __init__(self, *, gw_auth: GatewayBearerAuth, **data):
-        super().__init__(**data)
-        self._gw_auth = gw_auth
-
-    @cached_property
-    def _async_client(self) -> _anthropic_sdk.AsyncAnthropic:
-        http_client = httpx.AsyncClient(auth=self._gw_auth)
-        return _anthropic_sdk.AsyncAnthropic(**self._client_params, http_client=http_client)
 
 
 # IDP configuration
@@ -146,14 +136,29 @@ def _load_llm_config() -> dict:
 _llm_cfg = _load_llm_config()
 llm_provider = _llm_cfg.get("provider", "openai").lower()
 llm_model = _llm_cfg.get("model")
+logger.info("LLM config: provider=%s model=%s gateway_enabled=%s", llm_provider, llm_model, _llm_cfg.get("gateway", {}).get("enabled", False))
 
 openai_api_key = os.environ.get('OPENAI_API_KEY')
 gemini_api_key = os.environ.get('GEMINI_API_KEY')
 anthropic_api_key = os.environ.get('ANTHROPIC_API_KEY')
 
+# Captured at startup — used by the Bedrock botocore event handler to fetch
+# a fresh OAuth token from the worker thread that boto3 runs in.
+_main_loop: asyncio.AbstractEventLoop | None = None
+
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    global _main_loop
+    _main_loop = asyncio.get_running_loop()
+    logger.info("Event loop captured for Bedrock gateway token injection")
+    yield
+
+
 app = FastAPI(
     title="Bank of Asgard — Transactions Agent",
     version="1.0.0",
+    lifespan=_lifespan,
 )
 
 
@@ -162,33 +167,70 @@ class TextResponse(BaseModel):
     content: str
 
 
-# Build LLM based on configured provider
+# Build model client based on configured provider
 _gateway_cfg = _llm_cfg.get("gateway", {})
 _use_gateway = _gateway_cfg.get("enabled", False)
 
 _default_models = {
     "gemini": "gemini-2.5-flash-lite",
     "anthropic": "claude-sonnet-4-5-20250929",
+    "bedrock": "eu.anthropic.claude-sonnet-4-6",
     "openai": "gpt-4o-mini",
 }
 
+_bedrock_region = os.environ.get("AWS_DEFAULT_REGION", "eu-north-1")
 
-def _build_gateway_llm(gw_base_url: str, token_manager: GatewayTokenManager):
-    """Build a LangChain LLM routed via the WSO2 API Gateway at the given base URL."""
-    gw_auth = GatewayBearerAuth(token_manager)
-    if llm_provider == 'anthropic':
-        return GatewayChatAnthropic(
-            model=llm_model or _default_models["anthropic"],
-            anthropic_api_url=gw_base_url,
-            anthropic_api_key="unused",
-            gw_auth=gw_auth,
+
+def _build_gateway_model(gw_url: str, token_manager: GatewayTokenManager):
+    """Build a Strands model client routed via the WSO2 API Gateway."""
+    if llm_provider == 'bedrock':
+        # Use BedrockModel with the Converse API format over the gateway.
+        # SigV4 signing is disabled; the gateway OAuth bearer token is injected
+        # via a botocore before-send event so it's always fresh at request time.
+        logger.info("Building Bedrock Converse gateway model (endpoint=%s, model=%s)", gw_url, llm_model or _default_models["bedrock"])
+
+        def _inject_bearer(request, **__):  # noqa: ANN003
+            # _stream() runs in asyncio.to_thread — use run_coroutine_threadsafe
+            # to fetch a fresh token from the main event loop.
+            if _main_loop and _main_loop.is_running():
+                token = asyncio.run_coroutine_threadsafe(
+                    token_manager.get_token(), _main_loop
+                ).result(timeout=10)
+            else:
+                token = token_manager.cached_token or ""
+            if token:
+                request.headers['Authorization'] = f'Bearer {token}'
+
+        model = BedrockModel(
+            endpoint_url=gw_url,
+            region_name=_bedrock_region,
+            boto_client_config=BotocoreConfig(
+                signature_version=botocore.UNSIGNED,
+                read_timeout=120,
+            ),
+            model_id=llm_model or _default_models["bedrock"],
+            max_tokens=4096,
+            streaming=False,
+        )
+        model.client.meta.events.register('before-send.bedrock-runtime.*', _inject_bearer)
+        return model
+    elif llm_provider == 'anthropic':
+        http_client = httpx.AsyncClient(auth=GatewayBearerAuth(token_manager))
+        return AnthropicModel(
+            client_args={"base_url": gw_url, "api_key": "unused", "http_client": http_client},
+            model_id=llm_model or _default_models["anthropic"],
+            max_tokens=4096,
         )
     else:
-        return ChatOpenAI(
-            model=llm_model or _default_models.get(llm_provider, "gpt-4o-mini"),
-            base_url=gw_base_url,
+        http_client = httpx.AsyncClient(auth=GatewayBearerAuth(token_manager))
+        gw_openai_client = openai.AsyncOpenAI(
+            base_url=gw_url,
             api_key="unused",
-            http_async_client=httpx.AsyncClient(auth=gw_auth),
+            http_client=http_client,
+        )
+        return OpenAIModel(
+            client=gw_openai_client,
+            model_id=llm_model or _default_models.get(llm_provider, "gpt-4o-mini"),
         )
 
 
@@ -199,31 +241,40 @@ if _use_gateway:
         client_id=os.environ["GATEWAY_CLIENT_ID"],
         client_secret=os.environ["GATEWAY_CLIENT_SECRET"],
     )
-    llm = _build_gateway_llm(os.environ["GATEWAY_BASE_URL"], _gw_token_manager)
-    llm_secured = _build_gateway_llm(os.environ["GATEWAY_BASE_URL_SECURED"], _gw_token_manager)
+    model_client = _build_gateway_model(os.environ["GATEWAY_BASE_URL"], _gw_token_manager)
+    model_client_secured = _build_gateway_model(os.environ["GATEWAY_BASE_URL_SECURED"], _gw_token_manager)
     logger.info("Gateway base URL: %s", os.environ["GATEWAY_BASE_URL"])
     logger.info("Gateway secured URL: %s", os.environ["GATEWAY_BASE_URL_SECURED"])
+elif llm_provider == 'bedrock':
+    model_client = BedrockModel(
+        model_id=llm_model or _default_models["bedrock"],
+        region_name=_bedrock_region,
+    )
+    model_client_secured = model_client
+    logger.info("Using AWS Bedrock Converse API directly (region=%s, model=%s)", _bedrock_region, llm_model or _default_models["bedrock"])
 elif llm_provider == 'gemini':
-    llm = ChatOpenAI(
-        model=llm_model or "gemini-2.5-flash-lite",
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        api_key=gemini_api_key,
+    model_client = OpenAIModel(
+        client_args={
+            "api_key": gemini_api_key,
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        },
+        model_id=llm_model or _default_models["gemini"],
     )
-    llm_secured = llm
+    model_client_secured = model_client
 elif llm_provider == 'anthropic':
-    llm = ChatAnthropic(
-        model=llm_model or "claude-sonnet-4-5-20250929",
-        anthropic_api_key=anthropic_api_key,
+    model_client = AnthropicModel(
+        client_args={"api_key": anthropic_api_key},
+        model_id=llm_model or _default_models["anthropic"],
+        max_tokens=4096,
     )
-    llm_secured = llm
+    model_client_secured = model_client
 else:  # default: openai
-    llm = ChatOpenAI(
-        model=llm_model or "gpt-4o-mini",
-        api_key=openai_api_key,
-        temperature=0.1,
-        max_tokens=2000,
+    model_client = OpenAIModel(
+        client_args={"api_key": openai_api_key},
+        model_id=llm_model or _default_models["openai"],
+        params={"temperature": 0.1, "max_tokens": 2000},
     )
-    llm_secured = llm
+    model_client_secured = model_client
 
 # Per-session state — each WebSocket gets its own auth manager and token cache
 auth_managers: Dict[str, AutogenAuthManager] = {}
@@ -235,13 +286,14 @@ def _extract_gateway_error(e: Exception) -> str | None:
     """Walk the exception chain looking for known gateway HTTP errors and return a user-friendly message."""
     cause = e
     while cause is not None:
+        # ── httpx path (Anthropic / OpenAI providers via gateway) ────────────
         if isinstance(cause, httpx.HTTPStatusError):
             status = cause.response.status_code
             if status == 446:
                 logger.warning("Guardrail triggered (446): %s", cause.response.text)
                 try:
                     data = cause.response.json()
-                    msg = data.get("message") or data.get("detail")
+                    msg = data.get("description") or data.get("message") or data.get("detail")
                     if isinstance(msg, dict):
                         msg = msg.get("actionReason") or msg.get("action") or str(msg)
                     return msg or cause.response.text or "Your request was blocked by an AI guardrail policy."
@@ -250,10 +302,36 @@ def _extract_gateway_error(e: Exception) -> str | None:
             if status == 429:
                 logger.warning("Rate limit hit (429): %s", cause.response.text)
                 return "I'm currently busy — the AI service is at capacity. Please try again in a moment."
+
+        # ── botocore path (Bedrock provider via gateway) ─────────────────────
+        if isinstance(cause, botocore.exceptions.ClientError):
+            status = cause.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if status == 446:
+                logger.warning("Guardrail triggered (446) via Bedrock: %s", cause.response)
+                try:
+                    error = cause.response.get("Error", {})
+                    # WSO2 guardrail response: body["message"]["actionReason"]
+                    msg = error.get("Message") or error.get("message") or ""
+                    if isinstance(msg, str):
+                        import json as _json
+                        try:
+                            msg = _json.loads(msg)
+                        except Exception:
+                            pass
+                    if isinstance(msg, dict):
+                        msg = msg.get("actionReason") or msg.get("action") or str(msg)
+                    return msg or "Your request was blocked by an AI guardrail policy."
+                except Exception:
+                    return "Your request was blocked by an AI guardrail policy."
+            if status == 429:
+                logger.warning("Rate limit hit (429) via Bedrock")
+                return "I'm currently busy — the AI service is at capacity. Please try again in a moment."
+
         cause = getattr(cause, "__cause__", None) or getattr(cause, "__context__", None)
+
     # Fallback: check string representation in case the lib swallowed the original exception
     msg = str(e)
-    if "446" in msg:
+    if "446" in msg or "900514" in msg:
         return "Your request was blocked by an AI guardrail policy."
     if "429" in msg:
         return "I'm currently busy — the AI service is at capacity. Please try again in a moment."
@@ -271,8 +349,8 @@ def _user_friendly_error(e: Exception) -> str:
     return "An unexpected error occurred. Please try again."
 
 
-async def run_agent(graph: Any, websocket: WebSocket, chat_history: List):
-    """Run the chat loop — receive user messages and return agent responses."""
+async def run_agent(assistant: Agent, websocket: WebSocket):
+    """Run the chat loop — receive user messages and stream agent responses."""
     while True:
         user_input = await websocket.receive_text()
 
@@ -281,20 +359,9 @@ async def run_agent(graph: Any, websocket: WebSocket, chat_history: List):
             break
 
         try:
-            messages = chat_history + [HumanMessage(content=user_input)]
-            result = await graph.ainvoke({"messages": messages})
-
-            # The last message in the result is the AI's final response
-            output = result["messages"][-1].content
-
-            # Update history with new messages from this turn
-            chat_history.extend(result["messages"][len(messages):])
-
-            for msg in result["messages"][len(messages):-1]:
-                logger.debug(f"[Agent Step] {msg}")
-
+            result = await assistant.invoke_async(user_input)
             await websocket.send_json(
-                TextResponse(content=output).model_dump()
+                TextResponse(content=str(result)).model_dump()
             )
         except Exception as e:
             guardrail_msg = _extract_gateway_error(e)
@@ -326,8 +393,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, secured: boo
     websocket_connections[session_id] = websocket
 
     # Wire the transactions tool with OBO token auth
-    get_transactions_tool = SecureLangChainTool(
-        get_my_transactions,
+    get_transactions_tool = SecureStrandsTool(
+        func=get_my_transactions,
         description=(
             "Fetch the current user's bank transactions. "
             "Supports optional filters: start_date (YYYY-MM-DD), end_date (YYYY-MM-DD), "
@@ -343,16 +410,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, secured: boo
         ))
     )
 
-    active_llm = llm_secured if secured else llm
+    active_model = model_client_secured if secured else model_client
     logger.info("Session %s using %s gateway", session_id, "secured" if secured else "base")
 
-    graph = create_agent(
-        active_llm,
-        [get_transactions_tool],
+    banking_assistant = Agent(
+        model=active_model,
+        tools=[get_transactions_tool],
         system_prompt=agent_system_prompt,
+        callback_handler=None,
     )
-
-    chat_history: List = []
 
     await websocket.accept()
 
@@ -366,7 +432,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, secured: boo
             )
         ).model_dump())
 
-        await run_agent(graph, websocket, chat_history)
+        await run_agent(banking_assistant, websocket)
     except WebSocketDisconnect:
         logger.info(f"Session {session_id} disconnected")
     except Exception as e:

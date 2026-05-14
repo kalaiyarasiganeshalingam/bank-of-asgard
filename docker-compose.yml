@@ -14,10 +14,43 @@ services:
     networks:
       - bank-network
 
-  transactions-agent:
+  transactions-agent-autogen:
+    profiles: [autogen]
     build:
       context: ./transactions-agent
-      dockerfile: Dockerfile
+      dockerfile: autogen/Dockerfile
+    container_name: bank-transactions-agent
+    ports:
+      - "8011:8011"
+    env_file: ./transactions-agent/.env
+    volumes:
+      - ~/podman_share/llm_config.yaml:/app/llm_config.yaml:ro,z
+    networks:
+      - bank-network
+    depends_on:
+      - transactions-api
+
+  transactions-agent-strands:
+    profiles: [strands]
+    build:
+      context: ./transactions-agent
+      dockerfile: strands/Dockerfile
+    container_name: bank-transactions-agent
+    ports:
+      - "8011:8011"
+    env_file: ./transactions-agent/.env
+    volumes:
+      - ~/podman_share/llm_config.yaml:/app/llm_config.yaml:ro,z
+    networks:
+      - bank-network
+    depends_on:
+      - transactions-api
+
+  transactions-agent-langchain:
+    profiles: [langchain]
+    build:
+      context: ./transactions-agent
+      dockerfile: langchain/Dockerfile
     container_name: bank-transactions-agent
     ports:
       - "8011:8011"
