@@ -158,6 +158,25 @@ Following table summarizes the apps and credentials setup and where this informa
 ## Transactions Agent
 
 
+1. Navigate to `App_home/app` and run `npm i`.
+
+2. From within the `App_home/app` directory, execute `npm start` to run the application.
+
+3. Create a copy of `server/.env.example` inside the `server/` folder. And name it as `.env`. Update the according to the commented instructions.
+
+4. Navigate to `App_home/server` and run `npm i`.
+
+5. From within the `App_home/server` directory, execute `nodemon server.js` to run the server.
+
+---
+
+## Transactions AI Agent — Setup
+
+The project includes an AI-powered transaction assistant. Three framework implementations are available — see **[docs/transactions-agent-setup.md](docs/transactions-agent-setup.md)** for the full architecture, security pattern, and end-to-end test checklist. The summary below covers the required configuration steps.
+
+### Asgardeo / WSO2 IS Configuration
+
+Before running the agent services, complete the following in your identity provider console:
 
 1. **Register the Transactions API resource** (Console → API Resources):
 
@@ -242,11 +261,14 @@ gateway:
 ```env
 # transactions-agent/.env
 GATEWAY_BASE_URL=<GATEWAY_BASE_URL>
+GATEWAY_BASE_URL_SECURED=<GATEWAY_BASE_URL_SECURED>   # guardrail-enabled endpoint (optional)
 GATEWAY_TOKEN_ENDPOINT=<GATEWAY_TOKEN_ENDPOINT>
 GATEWAY_CLIENT_ID=<GATEWAY_CLIENT_ID>
 GATEWAY_CLIENT_SECRET=<GATEWAY_CLIENT_SECRET>
 ```
 See [docs/transactions-agent-setup.md](docs/transactions-agent-setup.md) for gateway token refresh behaviour and fallback options.
+
+`GATEWAY_BASE_URL_SECURED` points to the guardrail-protected variant of the gateway endpoint (e.g. with prompt injection / content policies enforced). When set, the frontend can activate it by connecting to the agent WebSocket with `?secured=true`. If unset, the agent falls back to `GATEWAY_BASE_URL` for both modes.
 
 ### Transactions Agent
 
@@ -267,6 +289,11 @@ OPENAI_API_KEY=<OPENAI_API_KEY>
 # GEMINI_API_KEY=<GEMINI_API_KEY>
 # ANTHROPIC_API_KEY=<ANTHROPIC_API_KEY>
 
+# WSO2 Agent Manager — optional, only needed when running with instrumentation (see below)
+# Requires amp-instrumentation and opentelemetry-instrumentation-langchain<0.53.0 (already pinned in requirements.txt)
+# AMP_OTEL_ENDPOINT=http://host.containers.internal:22893/otel   # use this when running in a container
+# AMP_OTEL_ENDPOINT=http://localhost:22893/otel                   # use this when running natively
+# AMP_AGENT_API_KEY=<AMP_AGENT_API_KEY>
 ```
 
 2. Add the agent WebSocket URL to `app/public/config.js`:
