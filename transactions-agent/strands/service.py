@@ -50,6 +50,17 @@ load_dotenv()
 
 _ssl_verify = os.environ.get("SSL_VERIFY", "true").lower() != "false"
 
+# Traceloop / AMP tracing — imported lazily so the service starts even if the
+# packages are absent or AMP is not configured.
+try:
+    from traceloop.sdk.decorators import agent as _agent_decorator
+    from traceloop.sdk import Traceloop as _Traceloop
+    _HAS_TRACELOOP = True
+except ImportError:
+    _HAS_TRACELOOP = False
+    _Traceloop = None
+    _agent_decorator = lambda *a, **kw: (lambda f: f)  # no-op decorator
+
 
 class GatewayTokenManager:
     """Fetches and caches an OAuth2 client-credentials token for the WSO2 API Gateway."""
@@ -154,6 +165,15 @@ async def _lifespan(_: FastAPI):
     global _main_loop
     _main_loop = asyncio.get_running_loop()
     logger.info("Event loop captured for Bedrock gateway token injection")
+
+    if _HAS_TRACELOOP and os.environ.get("AMP_OTEL_ENDPOINT") and os.environ.get("AMP_AGENT_API_KEY"):
+        try:
+            from amp_instrumentation._bootstrap.initialization import initialize_instrumentation
+            initialize_instrumentation()
+            logger.info("AMP instrumentation enabled (endpoint: %s)", os.environ["AMP_OTEL_ENDPOINT"])
+        except Exception as exc:
+            logger.warning("AMP instrumentation init failed — tracing disabled: %s", exc)
+
     yield
 
 
@@ -383,6 +403,13 @@ def _user_friendly_error(e: Exception) -> str:
     return "An unexpected error occurred. Please try again."
 
 
+@_agent_decorator(name="banking_assistant")
+async def _invoke_agent(assistant: Agent, user_input: str) -> str:
+    """Single-turn agent invocation — traced as an agent span when AMP is active."""
+    result = await assistant.invoke_async(user_input)
+    return str(result)
+
+
 async def run_agent(assistant: Agent, websocket: WebSocket):
     """Run the chat loop — receive user messages and stream agent responses."""
     while True:
@@ -393,9 +420,9 @@ async def run_agent(assistant: Agent, websocket: WebSocket):
             break
 
         try:
-            result = await assistant.invoke_async(user_input)
+            result = await _invoke_agent(assistant, user_input)
             await websocket.send_json(
-                TextResponse(content=str(result)).model_dump()
+                TextResponse(content=result).model_dump()
             )
         except Exception as e:
             guardrail_msg = _extract_gateway_error(e)
@@ -446,6 +473,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, secured: boo
 
     active_model = model_client_secured if secured else model_client
     logger.info("Session %s using %s gateway", session_id, "secured" if secured else "base")
+
+    if _HAS_TRACELOOP and _Traceloop:
+        _Traceloop.set_association_properties({"session_id": session_id})
 
     banking_assistant = Agent(
         model=active_model,
