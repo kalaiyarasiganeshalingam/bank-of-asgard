@@ -284,6 +284,39 @@ state_mapping: Dict[str, str] = {}
 websocket_connections: Dict[str, WebSocket] = {}
 
 
+def _describe_guardrail(msg: dict) -> str:
+    """Turn a Bedrock guardrail assessment dict into a demo-friendly message."""
+    assessments = msg.get("assessments") or {}
+    parts = []
+
+    content = assessments.get("contentPolicy") or {}
+    for f in content.get("filters", []):
+        if f.get("detected") and f.get("action") == "BLOCKED":
+            label = f.get("type", "unknown").lower().replace("_", " ")
+            conf = f.get("confidence", "").lower()
+            parts.append(f"content policy ({label}, {conf} confidence)" if conf else f"content policy ({label})")
+
+    topic = assessments.get("topicPolicy") or {}
+    for t in topic.get("topics", []):
+        if t.get("action") == "BLOCKED":
+            parts.append(f"topic policy ({t.get('name', 'restricted topic')})")
+
+    if assessments.get("wordPolicy"):
+        parts.append("word policy (custom blocked word)")
+
+    pii = assessments.get("sensitiveInformationPolicy") or {}
+    for p in pii.get("piiEntities", []):
+        if p.get("action") == "BLOCKED":
+            parts.append(f"sensitive information policy ({p.get('type', 'PII')})")
+
+    direction = msg.get("direction", "").upper()
+    suffix = " in your message" if direction == "REQUEST" else " in the response" if direction == "RESPONSE" else ""
+
+    if parts:
+        return f"Your request was blocked by a guardrail — {', '.join(parts)} triggered{suffix}."
+    return msg.get("actionReason") or "Your request was blocked by an AI guardrail policy."
+
+
 def _extract_gateway_error(e: Exception) -> str | None:
     """Walk the exception chain looking for known gateway HTTP errors and return a user-friendly message."""
     cause = e
@@ -312,7 +345,6 @@ def _extract_gateway_error(e: Exception) -> str | None:
                 logger.warning("Guardrail triggered (446) via Bedrock: %s", cause.response)
                 try:
                     error = cause.response.get("Error", {})
-                    # WSO2 guardrail response: body["message"]["actionReason"]
                     msg = error.get("Message") or error.get("message") or ""
                     if isinstance(msg, str):
                         import json as _json
@@ -321,7 +353,7 @@ def _extract_gateway_error(e: Exception) -> str | None:
                         except Exception:
                             pass
                     if isinstance(msg, dict):
-                        msg = msg.get("actionReason") or msg.get("action") or str(msg)
+                        return _describe_guardrail(msg)
                     return msg or "Your request was blocked by an AI guardrail policy."
                 except Exception:
                     return "Your request was blocked by an AI guardrail policy."
