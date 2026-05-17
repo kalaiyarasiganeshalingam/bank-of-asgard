@@ -166,14 +166,6 @@ async def _lifespan(_: FastAPI):
     _main_loop = asyncio.get_running_loop()
     logger.info("Event loop captured for Bedrock gateway token injection")
 
-    if _HAS_TRACELOOP and os.environ.get("AMP_OTEL_ENDPOINT") and os.environ.get("AMP_AGENT_API_KEY"):
-        try:
-            from amp_instrumentation._bootstrap.initialization import initialize_instrumentation
-            initialize_instrumentation()
-            logger.info("AMP instrumentation enabled (endpoint: %s)", os.environ["AMP_OTEL_ENDPOINT"])
-        except Exception as exc:
-            logger.warning("AMP instrumentation init failed — tracing disabled: %s", exc)
-
     yield
 
 
