@@ -213,6 +213,12 @@ Before running the agent services, complete the following in your identity provi
 
 1. Create a copy of `app/public/config.example.js` inside the `app/public/` folder and name it `config.js`. Update the [config values](docs/config-properties.md) accordingly.
 
+   **Optional — AWS branding:** to show "Powered by AWS" logos on the home page and transactions page, uncomment the flag in `config.js`:
+   ```js
+   AWS_BRANDING: true,
+   ```
+   No rebuild is needed — `config.js` is a static file read at runtime.
+
 2. Navigate to `App_home/app` and run `npm i`.
 
 3. From within the `App_home/app` directory, execute `npm start` to run the application.
@@ -309,14 +315,15 @@ TRANSACTIONS_AGENT_URL: "ws://localhost:8011"
 
 The compose file uses **profiles** to select which agent implementation to run (`autogen`, `strands`, or `langchain`). Only one agent listens on port 8011 at a time.
 
-1. Copy `llm_config.yaml` to `~/podman_share/llm_config.yaml`:
+
+1. (Podman only) The Dockerfile mounts the llm_config file - For Podman, it needs to be in a folder that the podman machine has access to by default (your home directory) - If you use podman, copy `llm_config.yaml` to `~/podman_share/llm_config.yaml`:
 
 ```bash
 mkdir -p ~/podman_share
 cp llm_config.yaml ~/podman_share/llm_config.yaml
 ```
 
-2. Start both services, specifying the agent profile:
+2. Start the agent and the api, specifying the agent profile:
 
 ```bash
 # Choose one: autogen | strands | langchain
