@@ -32,7 +32,8 @@ export const environmentConfig = {
   IDENTITY_VERIFICATION_PROVIDER_ID: window.config && window.config.IDENTITY_VERIFICATION_PROVIDER_ID,
   IDENTITY_VERIFICATION_CLAIMS: window.config && window.config.IDENTITY_VERIFICATION_CLAIMS,
   TRANSACTIONS_AGENT_URL: window.config && window.config.TRANSACTIONS_AGENT_URL,
-  DEMO_USERS: window.config && window.config.DEMO_USERS
+  DEMO_USERS: window.config && window.config.DEMO_USERS,
+  AWS_BRANDING: window.config && window.config.AWS_BRANDING === true
 };
 
 /**

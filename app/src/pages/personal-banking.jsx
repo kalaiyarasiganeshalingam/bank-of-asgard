@@ -20,6 +20,7 @@ import { useAsgardeo } from "@asgardeo/react";
 import { useEffect } from "react";
 import { Link } from "react-router";
 import PropTypes from "prop-types";
+import { environmentConfig } from "../util/environment-util";
 import CardBanking from "../assets/images/image9.jpg";
 import MobileBanking from "../assets/images/mobile-banking.jpg";
 import DigitalBanking from "../assets/images/digital-banking.jpg";
@@ -220,6 +221,23 @@ const PersonalBankingPage = ({ setSiteSection }) => {
           </div>
         </div>
       </section>
+
+      { environmentConfig.AWS_BRANDING && (
+        <section className="layout_padding-bottom">
+          <div className="container">
+            <div style={{ textAlign: "center" }}>
+              <p style={{ marginBottom: "8px", color: "#666", fontSize: "14px" }}>
+                Secured identity powered by
+              </p>
+              <img
+                src="/images/powered-by-aws.png"
+                alt="Powered by AWS"
+                style={{ height: "60px" }}
+              />
+            </div>
+          </div>
+        </section>
+      )}
 
       <section className="client_section layout_padding">
         <div className="container ">

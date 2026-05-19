@@ -27,6 +27,7 @@ interface Window {
     IDENTITY_VERIFICATION_PROVIDER_ID: string;
     IDENTITY_VERIFICATION_CLAIMS: string[];
     TRANSACTIONS_AGENT_URL: string;
+    AWS_BRANDING?: boolean;
     DEMO_USERS?: {
       personal?: {
         firstName?: string;

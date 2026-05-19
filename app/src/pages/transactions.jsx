@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { environmentConfig } from "../util/environment-util";
 import { useNavigate } from "react-router";
 import {
   Box,
@@ -177,6 +178,15 @@ const TransactionsPage = () => {
               <Typography variant="caption" color="text.secondary">
                 Powered by WSO2 Identity Platform &bull; OAuth 2.0 On-Behalf-Of flow
               </Typography>
+              { environmentConfig.AWS_BRANDING && (
+                <Box sx={{ mt: 1.5 }}>
+                  <img
+                    src="/images/powered-by-aws.png"
+                    alt="Powered by AWS"
+                    style={{ height: "140px" }}
+                  />
+                </Box>
+              )}
             </Paper>
           </Box>
         </Box>

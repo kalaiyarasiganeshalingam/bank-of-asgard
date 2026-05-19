@@ -15,6 +15,7 @@ window.config = {
     "http://wso2.org/claims/dob",
   ],
   TRANSACTIONS_AGENT_URL: "wss://boa-agent.apis.coach:445",
+  // AWS_BRANDING: true,  // uncomment to show "Powered by AWS" logos
   DEMO_USERS: {
     personal: {
       firstName: "Personal",
