@@ -1,0 +1,10 @@
+[lint]
+select = ["E", "W", "F", "C90", "S"]
+ignore = ["E501"]
+
+[lint.per-file-ignores]
+# Logging must be configured before asgardeo/traceloop imports — ordering is intentional
+"**/service.py" = ["E402"]
+
+[lint.mccabe]
+max-complexity = 10
