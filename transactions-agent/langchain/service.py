@@ -152,6 +152,7 @@ llm_model = _llm_cfg.get("model")
 openai_api_key = os.environ.get('OPENAI_API_KEY')
 gemini_api_key = os.environ.get('GEMINI_API_KEY')
 anthropic_api_key = os.environ.get('ANTHROPIC_API_KEY')
+mistral_api_key = os.environ.get('MISTRAL_API_KEY')
 
 app = FastAPI(
     title="Bank of Asgard — Transactions Agent",
@@ -172,6 +173,7 @@ _default_models = {
     "gemini": "gemini-2.5-flash-lite",
     "anthropic": "claude-sonnet-4-5-20250929",
     "openai": "gpt-4o-mini",
+    "mistral": "mistral-small-latest",
 }
 
 
@@ -205,26 +207,32 @@ if _use_gateway:
     llm_secured = _build_gateway_llm(os.environ["GATEWAY_BASE_URL_SECURED"], _gw_token_manager)
     logger.info("Gateway base URL: %s", os.environ["GATEWAY_BASE_URL"])
     logger.info("Gateway secured URL: %s", os.environ["GATEWAY_BASE_URL_SECURED"])
-elif llm_provider == 'gemini':
-    llm = ChatOpenAI(
-        model=llm_model or "gemini-2.5-flash-lite",
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        api_key=gemini_api_key,
-    )
-    llm_secured = llm
-elif llm_provider == 'anthropic':
-    llm = ChatAnthropic(
-        model=llm_model or "claude-sonnet-4-5-20250929",
-        anthropic_api_key=anthropic_api_key,
-    )
-    llm_secured = llm
-else:  # default: openai
-    llm = ChatOpenAI(
-        model=llm_model or "gpt-4o-mini",
-        api_key=openai_api_key,
-        temperature=0.1,
-        max_tokens=2000,
-    )
+else:
+    match llm_provider:
+        case 'gemini':
+            llm = ChatOpenAI(
+                model=llm_model or _default_models["gemini"],
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                api_key=gemini_api_key,
+            )
+        case 'anthropic':
+            llm = ChatAnthropic(
+                model=llm_model or _default_models["anthropic"],
+                anthropic_api_key=anthropic_api_key,
+            )
+        case 'mistral':
+            llm = ChatOpenAI(
+                model=llm_model or _default_models["mistral"],
+                base_url="https://api.mistral.ai/v1",
+                api_key=mistral_api_key,
+            )
+        case _:  # default: openai
+            llm = ChatOpenAI(
+                model=llm_model or _default_models["openai"],
+                api_key=openai_api_key,
+                temperature=0.1,
+                max_tokens=2000,
+            )
     llm_secured = llm
 
 # Per-session state — each WebSocket gets its own auth manager and token cache

@@ -133,6 +133,7 @@ llm_model = _llm_cfg.get("model")
 openai_api_key = os.environ.get('OPENAI_API_KEY')
 gemini_api_key = os.environ.get('GEMINI_API_KEY')
 anthropic_api_key = os.environ.get('ANTHROPIC_API_KEY')
+mistral_api_key = os.environ.get('MISTRAL_API_KEY')
 
 app = FastAPI(
     title="Bank of Asgard — Transactions Agent",
@@ -153,6 +154,7 @@ _default_models = {
     "gemini": "gemini-2.5-flash-lite",
     "anthropic": "claude-sonnet-4-5-20250929",
     "openai": "gpt-4o-mini",
+    "mistral": "mistral-small-latest",
 }
 
 
@@ -193,34 +195,48 @@ if _use_gateway:
     model_client_secured = _build_gateway_model_client(os.environ["GATEWAY_BASE_URL_SECURED"], _gw_token_manager)
     logger.info("Gateway base URL: %s", os.environ["GATEWAY_BASE_URL"])
     logger.info("Gateway secured URL: %s", os.environ["GATEWAY_BASE_URL_SECURED"])
-elif llm_provider == 'gemini':
-    model_client = OpenAIChatCompletionClient(
-        model=llm_model or "gemini-2.5-flash-lite",
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        api_key=gemini_api_key,
-        model_info=ModelInfo(
-            vision=True,
-            function_calling=True,
-            json_output=True,
-            structured_output=True,
-            family=ModelFamily.UNKNOWN,
-        ),
-    )
-elif llm_provider == 'anthropic':
-    model_client = AnthropicChatCompletionClient(
-        model=llm_model or "claude-sonnet-4-5-20250929",
-        api_key=anthropic_api_key,
-    )
-    model_client_secured = model_client
-else:  # default: openai
-    model_client = OpenAIChatCompletionClient(
-        model=llm_model or "gpt-4o-mini",
-        api_key=openai_api_key,
-        model_kwargs={
-            "temperature": 0.1,
-            "max_tokens": 2000,
-        }
-    )
+else:
+    match llm_provider:
+        case 'gemini':
+            model_client = OpenAIChatCompletionClient(
+                model=llm_model or _default_models["gemini"],
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                api_key=gemini_api_key,
+                model_info=ModelInfo(
+                    vision=True,
+                    function_calling=True,
+                    json_output=True,
+                    structured_output=True,
+                    family=ModelFamily.UNKNOWN,
+                ),
+            )
+        case 'anthropic':
+            model_client = AnthropicChatCompletionClient(
+                model=llm_model or _default_models["anthropic"],
+                api_key=anthropic_api_key,
+            )
+        case 'mistral':
+            model_client = OpenAIChatCompletionClient(
+                model=llm_model or _default_models["mistral"],
+                base_url="https://api.mistral.ai/v1",
+                api_key=mistral_api_key,
+                model_info=ModelInfo(
+                    vision=False,
+                    function_calling=True,
+                    json_output=True,
+                    structured_output=True,
+                    family=ModelFamily.UNKNOWN,
+                ),
+            )
+        case _:  # default: openai
+            model_client = OpenAIChatCompletionClient(
+                model=llm_model or _default_models["openai"],
+                api_key=openai_api_key,
+                model_kwargs={
+                    "temperature": 0.1,
+                    "max_tokens": 2000,
+                }
+            )
     model_client_secured = model_client
 
 # Per-session state — each WebSocket gets its own auth manager and token cache

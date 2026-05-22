@@ -154,6 +154,7 @@ logger.info("LLM config: provider=%s model=%s gateway_enabled=%s", llm_provider,
 openai_api_key = os.environ.get('OPENAI_API_KEY')
 gemini_api_key = os.environ.get('GEMINI_API_KEY')
 anthropic_api_key = os.environ.get('ANTHROPIC_API_KEY')
+mistral_api_key = os.environ.get('MISTRAL_API_KEY')
 
 # Captured at startup — used by the Bedrock botocore event handler to fetch
 # a fresh OAuth token from the worker thread that boto3 runs in.
@@ -190,6 +191,7 @@ _default_models = {
     "anthropic": "claude-sonnet-4-5-20250929",
     "bedrock": "eu.anthropic.claude-sonnet-4-6",
     "openai": "gpt-4o-mini",
+    "mistral": "mistral-small-latest",
 }
 
 _bedrock_region = os.environ.get("AWS_DEFAULT_REGION", "eu-north-1")
@@ -259,35 +261,42 @@ if _use_gateway:
     model_client_secured = _build_gateway_model(os.environ["GATEWAY_BASE_URL_SECURED"], _gw_token_manager)
     logger.info("Gateway base URL: %s", os.environ["GATEWAY_BASE_URL"])
     logger.info("Gateway secured URL: %s", os.environ["GATEWAY_BASE_URL_SECURED"])
-elif llm_provider == 'bedrock':
-    model_client = BedrockModel(
-        model_id=llm_model or _default_models["bedrock"],
-        region_name=_bedrock_region,
-    )
-    model_client_secured = model_client
-    logger.info("Using AWS Bedrock Converse API directly (region=%s, model=%s)", _bedrock_region, llm_model or _default_models["bedrock"])
-elif llm_provider == 'gemini':
-    model_client = OpenAIModel(
-        client_args={
-            "api_key": gemini_api_key,
-            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        },
-        model_id=llm_model or _default_models["gemini"],
-    )
-    model_client_secured = model_client
-elif llm_provider == 'anthropic':
-    model_client = AnthropicModel(
-        client_args={"api_key": anthropic_api_key},
-        model_id=llm_model or _default_models["anthropic"],
-        max_tokens=4096,
-    )
-    model_client_secured = model_client
-else:  # default: openai
-    model_client = OpenAIModel(
-        client_args={"api_key": openai_api_key},
-        model_id=llm_model or _default_models["openai"],
-        params={"temperature": 0.1, "max_tokens": 2000},
-    )
+else:
+    match llm_provider:
+        case 'bedrock':
+            model_client = BedrockModel(
+                model_id=llm_model or _default_models["bedrock"],
+                region_name=_bedrock_region,
+            )
+            logger.info("Using AWS Bedrock Converse API directly (region=%s, model=%s)", _bedrock_region, llm_model or _default_models["bedrock"])
+        case 'gemini':
+            model_client = OpenAIModel(
+                client_args={
+                    "api_key": gemini_api_key,
+                    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+                },
+                model_id=llm_model or _default_models["gemini"],
+            )
+        case 'anthropic':
+            model_client = AnthropicModel(
+                client_args={"api_key": anthropic_api_key},
+                model_id=llm_model or _default_models["anthropic"],
+                max_tokens=4096,
+            )
+        case 'mistral':
+            model_client = OpenAIModel(
+                client_args={
+                    "api_key": mistral_api_key,
+                    "base_url": "https://api.mistral.ai/v1",
+                },
+                model_id=llm_model or _default_models["mistral"],
+            )
+        case _:  # default: openai
+            model_client = OpenAIModel(
+                client_args={"api_key": openai_api_key},
+                model_id=llm_model or _default_models["openai"],
+                params={"temperature": 0.1, "max_tokens": 2000},
+            )
     model_client_secured = model_client
 
 # Per-session state — each WebSocket gets its own auth manager and token cache
