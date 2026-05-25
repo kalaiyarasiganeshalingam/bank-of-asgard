@@ -38,6 +38,9 @@
     "vite": "6.4.2",
     "vite-plugin-svgr": "4.5.0"
   },
+  "overrides": {
+    "dompurify": ">=3.4.0"
+  },
   "devDependencies": {
     "@eslint/js": "9.39.4",
     "@types/react": "19.2.14",

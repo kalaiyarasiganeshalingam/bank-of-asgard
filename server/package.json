@@ -11,6 +11,9 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
+  "overrides": {
+    "qs": ">=6.15.2"
+  },
   "dependencies": {
     "axios": "1.16.1",
     "cors": "2.8.6",
