@@ -154,6 +154,16 @@ wait_for_http "http://localhost:$PORT_SERVER/health" "server"
 # ── Start frontend (Vite) ─────────────────────────────────────────────────────
 section "Starting frontend (port $PORT_FRONTEND)"
 
+# Toggle AWS branding based on agent — strands uses Bedrock (AWS), others do not
+CONFIG_JS="$ROOT/app/public/config.js"
+if [[ "$AGENT" == "strands-agent" ]]; then
+    tmp=$(mktemp) && sed 's/AWS_BRANDING: false/AWS_BRANDING: true/' "$CONFIG_JS" > "$tmp" && mv "$tmp" "$CONFIG_JS"
+    ok "AWS branding enabled (strands/Bedrock)"
+else
+    tmp=$(mktemp) && sed 's/AWS_BRANDING: true/AWS_BRANDING: false/' "$CONFIG_JS" > "$tmp" && mv "$tmp" "$CONFIG_JS"
+    ok "AWS branding disabled ($AGENT_ARG)"
+fi
+
 (cd "$ROOT/app" && npm run start \
     > "$LOG_DIR/frontend.log" 2>&1) &
 echo "frontend:$!" >> "$PID_FILE"
@@ -173,6 +183,7 @@ echo -e "  ${BOLD}Server API${NC}           http://localhost:$PORT_SERVER"
 echo -e "  ${BOLD}Transactions API${NC}     http://localhost:$PORT_API"
 echo -e "  ${BOLD}Agent ($AGENT_ARG)${NC}           ws://localhost:$PORT_AGENT"
 echo -e "  ${BOLD}LLM${NC}                  $LLM_PROVIDER / $LLM_MODEL${LLM_VIA}"
+[[ "$AGENT" == "strands-agent" ]] && echo -e "  ${BOLD}AWS branding${NC}         enabled" || echo -e "  ${BOLD}AWS branding${NC}         disabled"
 echo ""
 echo -e "  Logs:"
 echo -e "    ${BLUE}$LOG_DIR/transactions-api.log${NC}"
