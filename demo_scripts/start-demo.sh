@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # start-demo.sh — Bank of Asgard full-stack demo launcher
-# Usage: ./scripts/start-demo.sh [langchain-agent|autogen-agent|strands-agent]
 # Starts: transactions-api → selected agent → server → frontend
 # Logs go to .demo-logs/  PIDs tracked in .demo.pids
 
@@ -21,9 +20,42 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; BO
 
 info()    { echo -e "  ${BLUE}→${NC}  $1"; }
 ok()      { echo -e "  ${GREEN}✔${NC}  $1"; }
+warn()    { echo -e "  ${YELLOW}⚠${NC}  $1"; }
 fail()    { echo -e "  ${RED}✗${NC}  $1"; }
 section() { echo -e "\n${BOLD}${BLUE}▸ $1${NC}"; }
 die()     { echo -e "\n${RED}${BOLD}Error: $1${NC}" >&2; exit 1; }
+
+show_help() {
+    echo ""
+    echo -e "${BOLD}Usage:${NC} ./demo_scripts/start-demo.sh [agent] [options]"
+    echo ""
+    echo -e "  ${BOLD}agent${NC}     langchain | autogen | strands  (prompted if omitted)"
+    echo ""
+    echo -e "${BOLD}Options:${NC}"
+    echo "  --amp     Enable WSO2 Agent Manager (AMP) instrumentation"
+    echo "            Supported by: langchain, strands (autogen lacks the required packages)"
+    echo "            Requires: amp-instrumentation installed in the agent venv"
+    echo "                      AMP_OTEL_ENDPOINT and AMP_AGENT_API_KEY in transactions-agent/.env"
+    echo "  --help    Show this help and exit"
+    echo ""
+    echo -e "${BOLD}Examples:${NC}"
+    echo "  ./demo_scripts/start-demo.sh"
+    echo "  ./demo_scripts/start-demo.sh langchain"
+    echo "  ./demo_scripts/start-demo.sh strands --amp"
+    echo ""
+}
+
+# ── Argument parsing ──────────────────────────────────────────────────────────
+USE_AMP=false
+AGENT_ARG=""
+for arg in "$@"; do
+    case "$arg" in
+        --amp)  USE_AMP=true ;;
+        --help) show_help; exit 0 ;;
+        -*)     die "Unknown option: $arg. Run --help for usage." ;;
+        *)      [[ -z "$AGENT_ARG" ]] && AGENT_ARG="$arg" || die "Unexpected argument: $arg. Run --help for usage." ;;
+    esac
+done
 
 # ── Existing instance guard ───────────────────────────────────────────────────
 if [[ -f "$PID_FILE" ]]; then
@@ -42,7 +74,6 @@ section "Running pre-flight checks"
 # ── Agent selection (only reached if all checks pass) ─────────────────────────
 section "Agent selection"
 
-AGENT_ARG="${1:-}"
 if [[ -z "$AGENT_ARG" ]]; then
     echo ""
     echo "  Which agent implementation would you like to start?"
@@ -67,6 +98,20 @@ case "$AGENT_ARG" in
     *) die "Unknown agent '$AGENT_ARG'. Choose: langchain, autogen, or strands." ;;
 esac
 
+# ── AMP instrumentation selection ────────────────────────────────────────────
+AMP_SUPPORTED=false
+[[ "$AGENT" == "langchain-agent" || "$AGENT" == "strands-agent" ]] && AMP_SUPPORTED=true
+
+if $USE_AMP && ! $AMP_SUPPORTED; then
+    warn "AMP instrumentation is not supported by $AGENT_ARG (only langchain and strands). Skipping."
+    USE_AMP=false
+elif $AMP_SUPPORTED && ! $USE_AMP; then
+    echo ""
+    read -rp "  Enable AMP (Agent Manager) instrumentation? [y/N]: " amp_choice
+    [[ "$amp_choice" =~ ^[Yy]$ ]] && USE_AMP=true || true
+fi
+
+
 # ── Read LLM config ───────────────────────────────────────────────────────────
 LLM_CONFIG="$ROOT/llm_config.yaml"
 LLM_PROVIDER=$(grep -E '^provider:' "$LLM_CONFIG" 2>/dev/null | sed 's/provider:[[:space:]]*//' | tr -d '[:space:]' || true)
@@ -88,7 +133,16 @@ if [[ -n "$LLM_GATEWAY" ]]; then LLM_VIA=" via gateway"; else LLM_VIA=""; fi
 
 AGENT_DIR="$ROOT/transactions-agent"
 AGENT_PY="$AGENT_DIR/$AGENT/venv/bin/python"
+AMP_INSTRUMENT="$AGENT_DIR/$AGENT/venv/bin/amp-instrument"
 [[ -f "$AGENT_PY" ]] || die "venv not found for $AGENT — run: python3.11 -m venv transactions-agent/$AGENT/venv && transactions-agent/$AGENT/venv/bin/pip install -r transactions-agent/$AGENT/requirements.txt"
+
+if $USE_AMP; then
+    [[ -f "$AMP_INSTRUMENT" ]] || die "amp-instrument not found in $AGENT venv. Install via: $AGENT_DIR/$AGENT/venv/bin/pip install amp-instrumentation"
+    AGENT_ENV="$ROOT/transactions-agent/.env"
+    grep -q "AMP_OTEL_ENDPOINT" "$AGENT_ENV" 2>/dev/null || warn "AMP_OTEL_ENDPOINT not found in transactions-agent/.env"
+    grep -q "AMP_AGENT_API_KEY" "$AGENT_ENV" 2>/dev/null || warn "AMP_AGENT_API_KEY not found in transactions-agent/.env"
+    ok "AMP instrumentation enabled"
+fi
 
 ok "Using agent: ${AGENT_ARG}"
 
@@ -135,9 +189,16 @@ wait_for_http "http://localhost:$PORT_API/health" "transactions-api"
 # ── Start transactions-agent ──────────────────────────────────────────────────
 section "Starting $AGENT (port $PORT_AGENT)"
 
-(cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" "$AGENT_PY" -m uvicorn service:app \
-    --app-dir "$AGENT" --port "$PORT_AGENT" \
-    > "$LOG_DIR/agent.log" 2>&1) &
+UVICORN="$AGENT_DIR/$AGENT/venv/bin/uvicorn"
+if $USE_AMP; then
+    (cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" "$AMP_INSTRUMENT" "$UVICORN" service:app \
+        --app-dir "$AGENT" --port "$PORT_AGENT" \
+        > "$LOG_DIR/agent.log" 2>&1) &
+else
+    (cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" "$UVICORN" service:app \
+        --app-dir "$AGENT" --port "$PORT_AGENT" \
+        > "$LOG_DIR/agent.log" 2>&1) &
+fi
 echo "agent:$!" >> "$PID_FILE"
 
 wait_for_http "http://localhost:$PORT_AGENT/openapi.json" "$AGENT"
@@ -184,6 +245,7 @@ echo -e "  ${BOLD}Transactions API${NC}     http://localhost:$PORT_API"
 echo -e "  ${BOLD}Agent ($AGENT_ARG)${NC}           ws://localhost:$PORT_AGENT"
 echo -e "  ${BOLD}LLM${NC}                  $LLM_PROVIDER / $LLM_MODEL${LLM_VIA}"
 [[ "$AGENT" == "strands-agent" ]] && echo -e "  ${BOLD}AWS branding${NC}         enabled" || echo -e "  ${BOLD}AWS branding${NC}         disabled"
+$USE_AMP && echo -e "  ${BOLD}AMP instrumentation${NC}  enabled" || true
 echo ""
 echo -e "  Logs:"
 echo -e "    ${BLUE}$LOG_DIR/transactions-api.log${NC}"
