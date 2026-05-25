@@ -14,7 +14,7 @@ from asgardeo.models import OAuthToken
 
 logger = logging.getLogger(__name__)
 
-TOKEN_FIELD = "token"
+TOKEN_FIELD = "token"  # noqa: S105
 
 
 class SecureStrandsTool(AgentTool):
