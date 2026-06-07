@@ -176,7 +176,7 @@ def _validate_token(token: str) -> None:
 
 _UNAUTHORIZED = (
     b'{"error":"Unauthorized"}',
-    [(b"content-type", b"application/json"), (b"content-length", b"23")],
+    [(b"content-type", b"application/json"), (b"content-length", b"24")],
 )
 
 
@@ -212,7 +212,7 @@ class BearerAuthMiddleware:
     async def _send_401(send) -> None:
         body, headers = _UNAUTHORIZED
         await send({"type": "http.response.start", "status": 401, "headers": headers})
-        await send({"type": "http.response.body", "body": body})
+        await send({"type": "http.response.body", "body": body, "more_body": False})
 
 
 mcp = FastMCP("Bank of Asgard — Agencies")
