@@ -12,9 +12,10 @@ cachetools==5.5.2
 requests==2.33.0
 httpx==0.28.1
 pydantic==2.13.0
-PyJWT==2.12.1
+PyJWT==2.13.0
 python-multipart==0.0.27
 starlette==1.1.0
 websockets==16.0
 asgardeo-ai==0.2.2
 amp-instrumentation==0.2.1
+mcp>=1.9

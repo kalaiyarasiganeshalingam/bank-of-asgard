@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # start-demo.sh — Bank of Asgard full-stack demo launcher
-# Starts: transactions-api → selected agent → server → frontend
+# Starts: transactions-api → selected agent → agencies-mcp-server → server → frontend
 # Logs go to .demo-logs/  PIDs tracked in .demo.pids
 
 set -euo pipefail
@@ -15,6 +15,7 @@ PORT_FRONTEND=5173
 PORT_SERVER=3002
 PORT_API=8010
 PORT_AGENT=8011
+PORT_MCP=8012
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
 
@@ -111,6 +112,11 @@ elif $AMP_SUPPORTED && ! $USE_AMP; then
     [[ "$amp_choice" =~ ^[Yy]$ ]] && USE_AMP=true || true
 fi
 
+# ── MCP server paths ──────────────────────────────────────────────────────────
+MCP_PY="$ROOT/agencies-mcp-server/venv/bin/python"
+MCP_ENV="$ROOT/agencies-mcp-server/.env"
+[[ -f "$MCP_PY" ]]  || die "agencies-mcp-server venv not found. Run: cd agencies-mcp-server && python3.11 -m venv venv && venv/bin/pip install -r requirements.txt"
+[[ -f "$MCP_ENV" ]] || die "agencies-mcp-server/.env not found — copy from agencies-mcp-server/.env.example"
 
 # ── Read LLM config ───────────────────────────────────────────────────────────
 LLM_CONFIG="$ROOT/llm_config.yaml"
@@ -150,6 +156,13 @@ ok "Using agent: ${AGENT_ARG}"
 mkdir -p "$LOG_DIR"
 : > "$PID_FILE"
 
+# Persist startup context so restart.sh can relaunch services identically
+cat > "$ROOT/.demo.context" <<EOF
+AGENT=$AGENT
+AGENT_ARG=$AGENT_ARG
+USE_AMP=$USE_AMP
+EOF
+
 # Cleanup on unexpected exit during startup
 cleanup_on_error() {
     echo -e "\n${RED}Startup interrupted — cleaning up...${NC}"
@@ -157,7 +170,24 @@ cleanup_on_error() {
 }
 trap cleanup_on_error ERR INT TERM
 
-# ── Health check helper ───────────────────────────────────────────────────────
+# ── Health check helpers ──────────────────────────────────────────────────────
+wait_for_port() {
+    local port="$1" service="$2" timeout="${3:-60}"
+    local elapsed=0
+    info "Waiting for $service..."
+    while [[ $elapsed -lt $timeout ]]; do
+        if (echo >/dev/tcp/localhost/$port) 2>/dev/null; then
+            ok "$service is up"
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    fail "$service did not start within ${timeout}s — check $LOG_DIR/mcp.log"
+    "$SCRIPT_DIR/stop-demo.sh" --quiet 2>/dev/null || true
+    exit 1
+}
+
 wait_for_http() {
     local url="$1" service="$2" timeout="${3:-60}"
     local elapsed=0
@@ -191,7 +221,14 @@ section "Starting $AGENT (port $PORT_AGENT)"
 
 UVICORN="$AGENT_DIR/$AGENT/venv/bin/uvicorn"
 if $USE_AMP; then
-    (set -a; source "$AGENT_ENV"; set +a; cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" "$AMP_INSTRUMENT" "$UVICORN" service:app \
+    # Export only the two AMP vars amp-instrument needs at startup.
+    # Do NOT source the whole .env — bash variable expansion would corrupt any
+    # value containing $ (silently truncating secrets). Everything else is loaded
+    # safely by Python's load_dotenv() after the process starts.
+    _amp_var() { grep -E "^$1=" "$AGENT_ENV" | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'"; }
+    AMP_OTEL_ENDPOINT=$(_amp_var AMP_OTEL_ENDPOINT)
+    AMP_AGENT_API_KEY=$(_amp_var AMP_AGENT_API_KEY)
+    (export AMP_OTEL_ENDPOINT AMP_AGENT_API_KEY; cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" "$AMP_INSTRUMENT" "$UVICORN" service:app \
         --app-dir "$AGENT" --port "$PORT_AGENT" \
         > "$LOG_DIR/agent.log" 2>&1) &
 else
@@ -202,6 +239,15 @@ fi
 echo "agent:$!" >> "$PID_FILE"
 
 wait_for_http "http://localhost:$PORT_AGENT/openapi.json" "$AGENT"
+
+# ── Start agencies-mcp-server ─────────────────────────────────────────────────
+section "Starting agencies-mcp-server (port $PORT_MCP)"
+
+(set +u; set -a; source "$MCP_ENV"; set +a; set -u; cd "$ROOT/agencies-mcp-server" && "$MCP_PY" server.py \
+    > "$LOG_DIR/mcp.log" 2>&1) &
+echo "mcp:$!" >> "$PID_FILE"
+
+wait_for_port $PORT_MCP "agencies-mcp-server"
 
 # ── Start server (Express) ────────────────────────────────────────────────────
 section "Starting server (port $PORT_SERVER)"
@@ -243,6 +289,7 @@ echo -e "  ${BOLD}Frontend${NC}             http://localhost:$PORT_FRONTEND"
 echo -e "  ${BOLD}Server API${NC}           http://localhost:$PORT_SERVER"
 echo -e "  ${BOLD}Transactions API${NC}     http://localhost:$PORT_API"
 echo -e "  ${BOLD}Agent ($AGENT_ARG)${NC}           ws://localhost:$PORT_AGENT"
+echo -e "  ${BOLD}Agencies MCP${NC}         sse://localhost:$PORT_MCP"
 echo -e "  ${BOLD}LLM${NC}                  $LLM_PROVIDER / $LLM_MODEL${LLM_VIA}"
 [[ "$AGENT" == "strands-agent" ]] && echo -e "  ${BOLD}AWS branding${NC}         enabled" || echo -e "  ${BOLD}AWS branding${NC}         disabled"
 $USE_AMP && echo -e "  ${BOLD}AMP instrumentation${NC}  enabled" || true
@@ -250,6 +297,7 @@ echo ""
 echo -e "  Logs:"
 echo -e "    ${BLUE}$LOG_DIR/transactions-api.log${NC}"
 echo -e "    ${BLUE}$LOG_DIR/agent.log${NC}          ($AGENT_ARG)"
+echo -e "    ${BLUE}$LOG_DIR/mcp.log${NC}"
 echo -e "    ${BLUE}$LOG_DIR/server.log${NC}"
 echo -e "    ${BLUE}$LOG_DIR/frontend.log${NC}"
 echo -e "  To stop: ${BLUE}./demo_scripts/stop-demo.sh${NC}"
