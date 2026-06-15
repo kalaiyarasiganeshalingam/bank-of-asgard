@@ -6,10 +6,16 @@ import httpx
 from mcp.client.sse import sse_client
 from mcp import ClientSession
 
+from app.tool_integrity import ToolSchemaChecksum
+
 logger = logging.getLogger(__name__)
 
 _ssl_verify = os.environ.get("SSL_VERIFY", "true").lower() != "false"
 MCP_TIMEOUT = float(os.environ.get("MCP_TIMEOUT", "15"))
+
+# Module-level singleton — baseline is captured on the first successful call and
+# held for the lifetime of the process.
+_checksum = ToolSchemaChecksum("agencies_mcp")
 
 
 async def call_agencies_mcp(town: str, endpoint_url: str, bearer_token: str) -> str:
@@ -51,6 +57,14 @@ async def call_agencies_mcp(town: str, endpoint_url: str, bearer_token: str) -> 
         ) as (read, write):
             async with ClientSession(read, write) as session:
                 await asyncio.wait_for(session.initialize(), timeout=MCP_TIMEOUT)
+
+                # Verify tool definitions haven't changed since the baseline was
+                # established — guards against MCP rug-pull / tool-poisoning attacks.
+                tools_response = await asyncio.wait_for(
+                    session.list_tools(), timeout=MCP_TIMEOUT
+                )
+                _checksum.verify([t.model_dump() for t in tools_response.tools])
+
                 result = await asyncio.wait_for(
                     session.call_tool("get_agencies", {"town": town}),
                     timeout=MCP_TIMEOUT,
