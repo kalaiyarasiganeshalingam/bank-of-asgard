@@ -39,7 +39,10 @@
     "vite-plugin-svgr": "4.5.0"
   },
   "overrides": {
-    "dompurify": ">=3.4.0"
+    "@babel/core": ">=7.29.1",
+    "dompurify": ">=3.4.9",
+    "form-data": ">=4.0.6",
+    "js-yaml": ">=4.2.0"
   },
   "devDependencies": {
     "@eslint/js": "9.39.4",
