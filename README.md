@@ -2,7 +2,7 @@
 
 # Foreword
 
-This demo is an extension/rework of the original Bank of Asgard demo which was built to demonstrate IS CIAM capabilities. The instructions configure the demo only for the putpose of showing WSO2 Agentic platform capabilities. If you are looking CIAM capabilities, get the original version. Identity server setup, in particular, is quite different. 
+This demo is an extension/rework of the original Bank of Asgard demo which was built to demonstrate IS CIAM capabilities. The instructions configure the demo only for the purpose of showing WSO2 Agentic platform capabilities. If you are looking for CIAM capabilities, get the original version. Identity server setup, in particular, is quite different. 
 
 Using this demo, you can experience:
 
@@ -499,8 +499,8 @@ cd ..
 
 | Script | Purpose |
 |--------|---------|
-| `demo_scripts/validate.sh` | Pre-flight check — verifies versions, config files, venvs, imports, and port availability |
-| `demo_scripts/start-demo.sh [langchain\|autogen\|strands]` | Starts the full stack in order; polls each health endpoint before moving on; prompts for agent and AMP if not specified |
+| `demo_scripts/validate.sh` | Pre-flight check — verifies versions, config files, venvs, imports, and port availability - Only runs as part of `start-demo.sh`. |
+| `demo_scripts/start-demo.sh [langchain\|autogen\|strands] [--env=is\|asgardeo]` | Starts the full stack in order; polls each health endpoint before moving on; prompts for agent flavor and agent manager instructions if not specified. <br />Omit `--env` to keep existing `.env` files; pass a profile to back up and switch `.env` files **Note:** When you specify the  `--env` option, files with this environment name are expected to be present (`.env.is` or `.env.asgardeo`). Same is true of the `config.js` files. If a `.env`or `config.js` is already present in the target directory, it will backed up and then overriden. |
 | `demo_scripts/stop-demo.sh` | Gracefully stops everything started by `start-demo.sh` |
 | `demo_scripts/restart.sh <service>` | Stops and restarts a single service (`transactions-api`, `agent`, `mcp`, `server`, `frontend`) |
 
@@ -508,10 +508,12 @@ cd ..
 # Verify everything is configured correctly
 ./demo_scripts/validate.sh
 
-# Start the full stack (agent framework prompted if not specified)
+# Start the full stack — uses your existing .env files
 ./demo_scripts/start-demo.sh langchain
 # Start the full stack with instrumentation
 ./demo_scripts/start-demo.sh langchain --amp
+# Back up existing .env files and switch to a profile
+./demo_scripts/start-demo.sh langchain --env=asgardeo
 
 # Restart a single service after a code change (e.g. after editing the agent)
 ./demo_scripts/restart.sh agent
