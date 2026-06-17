@@ -328,7 +328,7 @@ else
     ok "AWS branding disabled ($AGENT_ARG)"
 fi
 
-(cd "$ROOT/app" && npm run start \
+(cd "$ROOT/app" && npm run preview \
     > "$LOG_DIR/frontend.log" 2>&1) &
 echo "frontend:$!" >> "$PID_FILE"
 

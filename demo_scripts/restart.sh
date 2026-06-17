@@ -233,7 +233,7 @@ case "$SERVICE" in
         section "Restarting frontend (port $PORT_FRONTEND)"
         stop_service "frontend"
         free_port $PORT_FRONTEND
-        (cd "$ROOT/app" && npm run start \
+        (cd "$ROOT/app" && npm run preview \
             > "$LOG_DIR/frontend.log" 2>&1) &
         register_pid "frontend" "$!"
         check_launched "$!" "frontend"
