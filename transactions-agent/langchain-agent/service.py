@@ -1,4 +1,5 @@
 import anthropic as _anthropic_sdk
+import json
 import logging
 import os
 import uuid
@@ -219,19 +220,29 @@ def _extract_gateway_error(e: Exception) -> str | None:
     while cause is not None:
         if isinstance(cause, httpx.HTTPStatusError):
             status = cause.response.status_code
-            if status == 446:
-                logger.warning("Guardrail triggered (446): %s", cause.response.text)
-                try:
-                    data = cause.response.json()
-                    msg = data.get("message") or data.get("detail")
-                    if isinstance(msg, dict):
-                        msg = msg.get("actionReason") or msg.get("action") or str(msg)
-                    return msg or cause.response.text or "Your request was blocked by an AI guardrail policy."
-                except Exception:
-                    return cause.response.text or "Your request was blocked by an AI guardrail policy."
-            if status == 429:
-                logger.warning("Rate limit hit (429): %s", cause.response.text)
-                return "I'm currently busy — the AI service is at capacity. Please try again in a moment."
+            body = cause.response.text
+            parsed = None
+        elif isinstance(cause, _anthropic_sdk.APIStatusError):
+            status = cause.status_code
+            body = str(cause.body)
+            parsed = cause.body if isinstance(cause.body, dict) else None
+        else:
+            cause = getattr(cause, "__cause__", None) or getattr(cause, "__context__", None)
+            continue
+
+        if status == 446:
+            logger.warning("Guardrail triggered (446): %s", body)
+            try:
+                data = parsed if parsed is not None else json.loads(body)
+                msg = data.get("message") or data.get("detail")
+                if isinstance(msg, dict):
+                    msg = msg.get("actionReason") or msg.get("action") or str(msg)
+                return msg or body or "Your request was blocked by an AI guardrail policy."
+            except Exception:
+                return body or "Your request was blocked by an AI guardrail policy."
+        if status == 429:
+            logger.warning("Rate limit hit (429): %s", body)
+            return "I'm currently busy — the AI service is at capacity. Please try again in a moment."
         cause = getattr(cause, "__cause__", None) or getattr(cause, "__context__", None)
     # Fallback: check string representation in case the lib swallowed the original exception
     msg = str(e)
