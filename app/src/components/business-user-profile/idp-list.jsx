@@ -37,15 +37,11 @@ import PropTypes from "prop-types";
 import { enqueueSnackbar } from "notistack";
 import { useHttpSwitch } from "../../sdk/httpSwitch";
 
-const IDPList = () => {
+const IDPList = ({ organizationId }) => {
 
   const [ idps, setIdps ] = useState([]);
   const [ loading, setLoading ] = useState(true);
   const [ openForm, setOpenForm ] = useState(false);
-  const { isSignedIn } = useAsgardeo();
-  const { myOrganizations } = useOrganization();
-  const { flattenedProfile } = useUser();
-  const [ organizationId, setOrganizationId ] = useState("");
   const [ deletingIdpId, setDeletingIdpId ] = useState(null);
   const [ mfaOptions, setMfaOptions ] = useState({
     totp: false,
@@ -55,10 +51,20 @@ const IDPList = () => {
   const httpSwitch = useHttpSwitch();
   const cache = { applicationId: null };
 
-  const request = (requestConfig) =>
-    httpSwitch.request(requestConfig)
-      .then((response) => response)
-      .catch((error) => error);
+  const orgServerBase = `${environmentConfig.IDP_BASE_URL}/o/api/server/`;
+
+  const request = (requestConfig) => {
+    if (requestConfig.url?.startsWith(orgServerBase)) {
+      const path = requestConfig.url.replace(`${environmentConfig.IDP_BASE_URL}/o/`, "");
+      return httpSwitch.request({
+        method: "POST",
+        url: `${environmentConfig.API_SERVICE_URL}/org-server-api`,
+        headers: { "Content-Type": "application/json" },
+        data: { organizationId, method: requestConfig.method, path, data: requestConfig.data, params: requestConfig.params },
+      }).then(r => r).catch(e => e);
+    }
+    return httpSwitch.request(requestConfig).then(r => r).catch(e => e);
+  };
 
   const fetchIdps = async () => {
     try {
@@ -255,19 +261,6 @@ const IDPList = () => {
   useEffect(() => {
     fetchIdps();
     fetchMFA();
-  }, []);
-
-  useEffect(() => {
-    if (!isSignedIn) {
-        return;
-    }
-    const businessOrg = myOrganizations.find(
-      (org) => org.name === flattenedProfile?.businessName
-    );
-    if (!businessOrg) {
-        return;
-    }
-    setOrganizationId(businessOrg.id);
   }, []);
 
   return (

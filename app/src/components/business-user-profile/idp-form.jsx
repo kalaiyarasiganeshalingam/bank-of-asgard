@@ -31,10 +31,19 @@ const IDPForm = ({ organizationId, onIdpAdded, fetchAppConfig, getAppId, onCance
   const [provider, setProvider] = useState("microsoft");
   const [loading, setLoading] = useState(false);
   const httpSwitch = useHttpSwitch();
-  const request = (requestConfig) =>
-    httpSwitch.request(requestConfig)
-      .then((response) => response)
-      .catch((error) => error);
+  const orgServerBase = `${environmentConfig.IDP_BASE_URL}/o/api/server/`;
+  const request = (requestConfig) => {
+    if (requestConfig.url?.startsWith(orgServerBase)) {
+      const path = requestConfig.url.replace(`${environmentConfig.IDP_BASE_URL}/o/`, "");
+      return httpSwitch.request({
+        method: "POST",
+        url: `${environmentConfig.API_SERVICE_URL}/org-server-api`,
+        headers: { "Content-Type": "application/json" },
+        data: { organizationId, method: requestConfig.method, path, data: requestConfig.data, params: requestConfig.params },
+      }).then(r => r).catch(e => e);
+    }
+    return httpSwitch.request(requestConfig).then(r => r).catch(e => e);
+  };
 
   const addAuthenticatorToStep1 = (sequence, providerName) => {
     const authenticatorMap = {

@@ -20,6 +20,7 @@ import * as React from 'react';
 import { DataGrid } from '@mui/x-data-grid';
 import Paper from '@mui/material/Paper';
 import { useEffect } from 'react';
+import PropTypes from 'prop-types';
 import { environmentConfig } from '../../util/environment-util';
 import { useUser } from '@asgardeo/react';
 import { useHttpSwitch } from '../../sdk/httpSwitch';
@@ -29,7 +30,7 @@ import EditIcon from "@mui/icons-material/Edit";
 import CountrySelect from '../../components/country-select';
 import { enqueueSnackbar } from 'notistack';
 
-const ListUsers = () => {
+const ListUsers = ({ organizationId }) => {
 
   const { profile } = useUser();
   const [rows, setRows] = React.useState([]);
@@ -137,6 +138,7 @@ const ListUsers = () => {
 
     return data.Resources
       .filter((user) => cleanUsername(user.userName) !== profile.userName)
+      .filter((user) => user.roles?.[0]?.display !== "Business Administrator")
       .map((user) => ({
         id: user.id,
         username: cleanUsername(user.userName),
@@ -205,7 +207,7 @@ const ListUsers = () => {
         givenName: updatedUser.givenName,
         familyName: updatedUser.familyName,
       },
-      emails: [updatedUser.email],
+      emails: [{ value: updatedUser.email, primary: true }],
       "urn:scim:wso2:schema": {
         dateOfBirth: updatedUser.dateOfBirth,
         country: updatedUser.country,
@@ -260,76 +262,22 @@ const ListUsers = () => {
       )
     );
   try {
-    const currentRoleId = await getRoleIdByName(selectedUser.role);
-    const newRoleId = await getRoleIdByName(newRoleName);
-
-    if (!newRoleId) {
-      console.error(`Role ID not found for role: ${newRoleName}`);
-      return;
-    }
-
-    if (currentRoleId) {
       await httpSwitch.request({
-        method: "PATCH",
-        url: `${environmentConfig.IDP_BASE_URL}/o/scim2/v2/Roles/${currentRoleId}`,
-        headers: {
-          Accept: "application/scim+json",
-          "Content-Type": "application/scim+json",
-        },
+        method: "POST",
+        url: `${environmentConfig.API_SERVICE_URL}/change-org-role`,
+        headers: { "Content-Type": "application/json" },
         data: {
-          schemas: ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
-          Operations: [
-            {
-              op: "remove",
-              path: `users[value eq "${selectedUser.id}"]`
-            }
-          ]
-        }
+          organizationId,
+          userId: selectedUser.id,
+          oldRoleName: selectedUser.role || null,
+          newRoleName,
+        },
       });
-    }
-
-    await httpSwitch.request({
-      method: "PATCH",
-      url: `${environmentConfig.IDP_BASE_URL}/o/scim2/v2/Roles/${newRoleId}`,
-      headers: {
-        Accept: "application/scim+json",
-        "Content-Type": "application/scim+json",
-      },
-      data: {
-        schemas: ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
-        Operations: [
-          {
-            op: "add",
-            path: "users",
-            value: [{ value: selectedUser.id }]
-          }
-        ]
-      }
-    });
-
-  } catch (error) {
-    console.error("Error switching role:", error);
-  } finally {
-    setAssigningRoleUserId(null);
-  }
-};
-
-  const getRoleIdByName = async (roleName) => {
-    const requestConfig = {
-      method: "GET",
-      url: `${environmentConfig.IDP_BASE_URL}/o/scim2/v2/Roles?filter=displayName eq ${encodeURIComponent(roleName)}`,
-      headers: {
-        Accept: "application/scim+json",
-      },
-    };
-
-    try {
-      const response = await httpSwitch.request(requestConfig);
-      const resources = response.data?.Resources || [];
-      return resources.length > 0 ? resources[0].id : null;
     } catch (error) {
       console.error("Error fetching role ID:", error);
       return null;
+    } finally {
+      setAssigningRoleUserId(null);
     }
   };
 
@@ -439,5 +387,9 @@ const ListUsers = () => {
     </Paper>
   );
 }
+
+ListUsers.propTypes = {
+  organizationId: PropTypes.string.isRequired,
+};
 
 export default ListUsers;
