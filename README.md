@@ -500,7 +500,7 @@ cd ..
 | Script | Purpose |
 |--------|---------|
 | `demo_scripts/validate.sh` | Pre-flight check — verifies versions, config files, venvs, imports, and port availability - Only runs as part of `start-demo.sh`. |
-| `demo_scripts/start-demo.sh [langchain\|autogen\|strands] [--env=is\|asgardeo]` | Starts the full stack in order; polls each health endpoint before moving on; prompts for agent flavor and agent manager instructions if not specified. <br />Omit `--env` to keep existing `.env` files; pass a profile to back up and switch `.env` files **Note:** When you specify the  `--env` option, files with this environment name are expected to be present (`.env.is` or `.env.asgardeo`). Same is true of the `config.js` files. If a `.env`or `config.js` is already present in the target directory, it will backed up and then overriden. |
+| `demo_scripts/start-demo.sh [langchain\|autogen\|strands] [--env=is\|asgardeo] [--amp] [--v1\|--v2]` | Starts the full stack in order; polls each health endpoint before moving on; prompts for agent flavor and agent manager instructions if not specified. <br />Omit `--env` to keep existing `.env` files; pass a profile to back up and switch `.env` files **Note:** When you specify the  `--env` option, files with this environment name are expected to be present (`.env.is` or `.env.asgardeo`). Same is true of the `config.js` files. If a `.env`or `config.js` is already present in the target directory, it will backed up and then overriden. <br />`--v1`/`--v2` is a demo-only toggle (default `v1`) for showing tracing/eval tooling catch a regression: `v2` deliberately bloats the system prompt and over-fetches `GetMyTransactions`, increasing tokens and latency so the difference shows up clearly in traces. |
 | `demo_scripts/stop-demo.sh` | Gracefully stops everything started by `start-demo.sh` |
 | `demo_scripts/restart.sh <service>` | Stops and restarts a single service (`transactions-api`, `agent`, `mcp`, `server`, `frontend`) |
 
@@ -514,6 +514,10 @@ cd ..
 ./demo_scripts/start-demo.sh langchain --amp
 # Back up existing .env files and switch to a profile
 ./demo_scripts/start-demo.sh langchain --env=asgardeo
+
+# Demo a token/latency regression between releases (with AMP tracing on)
+./demo_scripts/start-demo.sh langchain --amp --v1   # baseline
+./demo_scripts/start-demo.sh langchain --amp --v2   # deliberately degraded
 
 # Restart a single service after a code change (e.g. after editing the agent)
 ./demo_scripts/restart.sh agent

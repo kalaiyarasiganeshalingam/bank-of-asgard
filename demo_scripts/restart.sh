@@ -170,8 +170,9 @@ case "$SERVICE" in
         [[ -n "$AGENT" ]]    || die "AGENT not set in .demo.context — re-run start-demo.sh"
         [[ -n "$USE_AMP" ]]  || die "USE_AMP not set in .demo.context — re-run start-demo.sh"
         AMP_LABEL=$( [[ "$USE_AMP" == "true" ]] && echo "AMP enabled" || echo "AMP disabled" )
+        DEMO_VERSION="${DEMO_VERSION:-v1}"
         section "Restarting $AGENT_ARG (port $PORT_AGENT)"
-        ok "Framework: $AGENT_ARG  |  $AMP_LABEL"
+        ok "Framework: $AGENT_ARG  |  $AMP_LABEL  |  Demo version: $DEMO_VERSION"
         stop_service "agent"
         free_port $PORT_AGENT
         AGENT_DIR="$ROOT/transactions-agent"
@@ -185,12 +186,12 @@ case "$SERVICE" in
             _amp_var() { grep -E "^$1=" "$AGENT_ENV" | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'"; }
             AMP_OTEL_ENDPOINT=$(_amp_var AMP_OTEL_ENDPOINT)
             AMP_AGENT_API_KEY=$(_amp_var AMP_AGENT_API_KEY)
-            (export AMP_OTEL_ENDPOINT AMP_AGENT_API_KEY; cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" \
+            (export AMP_OTEL_ENDPOINT AMP_AGENT_API_KEY DEMO_VERSION; cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" \
                 "$AMP_INSTRUMENT" "$UVICORN" service:app \
                 --app-dir "$AGENT" --port "$PORT_AGENT" \
                 > "$LOG_DIR/agent.log" 2>&1) &
         else
-            (set +u; set -a; source "$AGENT_ENV"; set +a; set -u; cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" \
+            (set +u; set -a; source "$AGENT_ENV"; set +a; set -u; export DEMO_VERSION; cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" \
                 "$UVICORN" service:app \
                 --app-dir "$AGENT" --port "$PORT_AGENT" \
                 > "$LOG_DIR/agent.log" 2>&1) &

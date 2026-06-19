@@ -39,12 +39,16 @@ show_help() {
     echo "                     Supported by: langchain, strands (autogen lacks the required packages)"
     echo "                     Requires: amp-instrumentation installed in the agent venv"
     echo "                               AMP_OTEL_ENDPOINT and AMP_AGENT_API_KEY in transactions-agent/.env"
+    echo "  --v1 | --v2        Demo-only regression toggle for tracing/eval demos (default: v1)"
+    echo "                     v2 deliberately degrades token usage and latency (bloated system"
+    echo "                     prompt + over-fetching GetMyTransactions) to show up in traces."
     echo "  --help             Show this help and exit"
     echo ""
     echo -e "${BOLD}Examples:${NC}"
     echo "  ./demo_scripts/start-demo.sh langchain              # uses existing .env files"
     echo "  ./demo_scripts/start-demo.sh langchain --env=asgardeo  # backs up then switches profile"
     echo "  ./demo_scripts/start-demo.sh strands --env=is --amp"
+    echo "  ./demo_scripts/start-demo.sh langchain --amp --v2   # demo the regression with AMP tracing"
     echo ""
 }
 
@@ -52,11 +56,14 @@ show_help() {
 USE_AMP=false
 AGENT_ARG=""
 ENV_PROFILE=""
+DEMO_VERSION="v1"
 for arg in "$@"; do
     case "$arg" in
         --amp)          USE_AMP=true ;;
         --env=is)       ENV_PROFILE="is" ;;
         --env=asgardeo) ENV_PROFILE="asgardeo" ;;
+        --v1)           DEMO_VERSION="v1" ;;
+        --v2)           DEMO_VERSION="v2" ;;
         --help)         show_help; exit 0 ;;
         -*)             die "Unknown option: $arg. Run --help for usage." ;;
         *)              [[ -z "$AGENT_ARG" ]] && AGENT_ARG="$arg" || die "Unexpected argument: $arg. Run --help for usage." ;;
@@ -202,6 +209,7 @@ AGENT=$AGENT
 AGENT_ARG=$AGENT_ARG
 USE_AMP=$USE_AMP
 ENV_PROFILE=$ENV_PROFILE
+DEMO_VERSION=$DEMO_VERSION
 EOF
 
 # Cleanup on unexpected exit during startup
@@ -283,12 +291,12 @@ if $USE_AMP; then
     _amp_var() { grep -E "^$1=" "$AGENT_ENV" | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'"; }
     AMP_OTEL_ENDPOINT=$(_amp_var AMP_OTEL_ENDPOINT)
     AMP_AGENT_API_KEY=$(_amp_var AMP_AGENT_API_KEY)
-    (export AMP_OTEL_ENDPOINT AMP_AGENT_API_KEY; cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" "$AMP_INSTRUMENT" "$UVICORN" service:app \
+    (export AMP_OTEL_ENDPOINT AMP_AGENT_API_KEY DEMO_VERSION; cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" "$AMP_INSTRUMENT" "$UVICORN" service:app \
         --app-dir "$AGENT" --port "$PORT_AGENT" \
         > "$LOG_DIR/agent.log" 2>&1) &
 else
-    info "Agent command: cd $AGENT_DIR && PYTHONPATH=$AGENT_DIR $UVICORN service:app --app-dir $AGENT --port $PORT_AGENT"
-    (cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" "$UVICORN" service:app \
+    info "Agent command: cd $AGENT_DIR && PYTHONPATH=$AGENT_DIR DEMO_VERSION=$DEMO_VERSION $UVICORN service:app --app-dir $AGENT --port $PORT_AGENT"
+    (export DEMO_VERSION; cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" "$UVICORN" service:app \
         --app-dir "$AGENT" --port "$PORT_AGENT" \
         > "$LOG_DIR/agent.log" 2>&1) &
 fi
@@ -351,6 +359,7 @@ echo -e "  ${BOLD}LLM${NC}                  $LLM_PROVIDER / $LLM_MODEL${LLM_VIA}
 echo -e "  ${BOLD}IDP environment${NC}      ${ENV_PROFILE:-existing}"
 [[ "$AGENT" == "strands-agent" ]] && echo -e "  ${BOLD}AWS branding${NC}         enabled" || echo -e "  ${BOLD}AWS branding${NC}         disabled"
 $USE_AMP && echo -e "  ${BOLD}AMP instrumentation${NC}  enabled" || true
+echo -e "  ${BOLD}Demo version${NC}         $DEMO_VERSION"
 echo ""
 echo -e "  Logs:"
 echo -e "    ${BLUE}$LOG_DIR/transactions-api.log${NC}"

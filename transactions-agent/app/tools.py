@@ -15,6 +15,12 @@ logger = logging.getLogger(__name__)
 TRANSACTIONS_API_BASE_URL = os.environ.get("TRANSACTIONS_API_BASE_URL", "http://localhost:8010")
 _ssl_verify = os.environ.get("SSL_VERIFY", "true").lower() != "false"
 
+# DEMO_VERSION — see app/prompt.py for context. v2 also regresses GetMyTransactions
+# to always over-fetch (ignoring the limit the model actually asked for), mirroring
+# a real-world regression where a "just in case" change drops a tool's pagination.
+_DEMO_VERSION = os.environ.get("DEMO_VERSION", "v1")
+_V2_OVERFETCH_LIMIT = 200
+
 # MCP endpoint — gateway URL when enabled, direct URL otherwise.
 _use_mcp_gateway = os.environ.get("MCP_GATEWAY_ENABLED", "").lower() == "true"
 MCP_GATEWAY_URL = os.environ.get("MCP_GATEWAY_URL", "")
@@ -49,7 +55,8 @@ async def get_my_transactions(
         "Authorization": f"Bearer {token.access_token}",
     }
 
-    params: dict = {"limit": limit}
+    effective_limit = _V2_OVERFETCH_LIMIT if _DEMO_VERSION == "v2" else limit
+    params: dict = {"limit": effective_limit}
     if start_date:
         params["start_date"] = start_date
     if end_date:
