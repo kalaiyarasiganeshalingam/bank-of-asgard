@@ -175,7 +175,6 @@ const TransactionsPage = () => {
           </Box>
 
           {/* Right column — Info panel */}
-          <TransactionInfoPanel />
           <Box sx={{ flex: 1, minWidth: 260 }}>
             <Paper
               elevation={0}

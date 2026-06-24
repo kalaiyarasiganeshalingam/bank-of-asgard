@@ -31,7 +31,6 @@ import {
 } from "@mui/material";
 import DeleteIcon from "@mui/icons-material/Delete";
 import { environmentConfig } from "../../util/environment-util";
-import { useAsgardeo, useOrganization, useUser } from "@asgardeo/react";
 import IDPForm from "./idp-form";
 import PropTypes from "prop-types";
 import { enqueueSnackbar } from "notistack";
@@ -44,15 +43,15 @@ import { useHttpSwitch } from "../../sdk/httpSwitch";
  * @property {string} [description]
  */
 
-const IDPList = () => {
+/**
+ * @param {object} props
+ * @param {string} props.organizationId
+ */
+const IDPList = ({ organizationId }) => {
 
   const [ idps, setIdps ] = useState(/** @type {Idp[]} */ ([]));
   const [ loading, setLoading ] = useState(true);
   const [ openForm, setOpenForm ] = useState(false);
-  const { isSignedIn } = useAsgardeo();
-  const { myOrganizations } = useOrganization();
-  const { flattenedProfile } = useUser();
-  const [ organizationId, setOrganizationId ] = useState("");
   const [ deletingIdpId, setDeletingIdpId ] = useState(/** @type {string | null} */ (null));
   const [ mfaOptions, setMfaOptions ] = useState({
     totp: false,

@@ -44,7 +44,11 @@ import { enqueueSnackbar } from 'notistack';
  * @property {string} [password]
  */
 
-const ListUsers = () => {
+/**
+ * @param {object} props
+ * @param {string} props.organizationId
+ */
+const ListUsers = ({ organizationId }) => {
 
   const { profile } = useUser();
   const [rows, setRows] = React.useState(/** @type {ScimUser[]} */ ([]));

@@ -22,6 +22,10 @@ import AddUser from "./add-user";
 import { Button, Dialog, DialogActions, DialogContent } from "@mui/material";
 import ListUsers from "./list-users";
 
+/**
+ * @param {object} props
+ * @param {string} props.organizationId
+ */
 const ManageUsers = ({ organizationId }) => {
 
   const [openForm, setOpenForm] = useState(false);

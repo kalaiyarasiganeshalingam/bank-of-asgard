@@ -26,12 +26,12 @@ import PasswordField from "../common/password-field";
 import { useHttpSwitch } from "../../sdk/httpSwitch";
 import { useUser } from "@asgardeo/react";
 
-const AddUser = ({ onCancel , organizationId}) => {
 /**
  * @param {object} props
  * @param {() => void} props.onCancel
+ * @param {string} props.organizationId
  */
-const AddUser = ({ onCancel }) => {
+const AddUser = ({ onCancel, organizationId }) => {
   const { enqueueSnackbar } = useSnackbar();
   const httpSwitch = useHttpSwitch();
   const [ passwordValidationRules, setPasswordValidationRules ] = useState({});
