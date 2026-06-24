@@ -127,8 +127,8 @@ AGENT_APP_ID=<your-client-id>
 IDP_BASE_URL=https://identity.dev.apis.coach:9445
 IDP_REDIRECT_URI=https://boa-agent.apis.coach:445/callback   # ← must match Asgardeo app settings
 
-AGENT_ID=<agent-client-id>
-AGENT_SECRET=<agent-client-secret>
+TRANSACTIONS_AGENT_ID=<agent-client-id>
+TRANSACTIONS_AGENT_SECRET=<agent-client-secret>
 
 TRANSACTIONS_API_BASE_URL=http://localhost:8010   # ← not the docker container name
 

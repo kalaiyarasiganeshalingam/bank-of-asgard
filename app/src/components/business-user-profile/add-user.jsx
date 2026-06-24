@@ -27,6 +27,11 @@ import { useHttpSwitch } from "../../sdk/httpSwitch";
 import { useUser } from "@asgardeo/react";
 
 const AddUser = ({ onCancel , organizationId}) => {
+/**
+ * @param {object} props
+ * @param {() => void} props.onCancel
+ */
+const AddUser = ({ onCancel }) => {
   const { enqueueSnackbar } = useSnackbar();
   const httpSwitch = useHttpSwitch();
   const [ passwordValidationRules, setPasswordValidationRules ] = useState({});
@@ -46,7 +51,7 @@ const AddUser = ({ onCancel , organizationId}) => {
     password: ""
   });
 
-  const request = requestConfig =>
+  const request = (/** @type {object} */ requestConfig) =>
     httpSwitch.request(requestConfig)
       .then(response => response)
       .catch(error => error);
@@ -61,11 +66,30 @@ const AddUser = ({ onCancel , organizationId}) => {
       });
   }, []);
 
-  const handleSubmit = async (e) => {
+  const getRoleIdByName = async (/** @type {string} */ roleName) => {
+    const requestConfig = {
+      method: "GET",
+      url: `${environmentConfig.IDP_BASE_URL}/o/scim2/v2/Roles?filter=displayName eq ${encodeURIComponent(roleName)}`,
+      headers: {
+        Accept: "application/scim+json",
+      },
+    };
+
+    try {
+      const response = await httpSwitch.request(requestConfig);
+      const resources = response.data?.Resources || [];
+      return resources.length > 0 ? resources[0].id : null;
+    } catch (error) {
+      console.error("Error fetching role ID:", error);
+      return null;
+    }
+  };
+
+  const handleSubmit = async (/** @type {React.FormEvent} */ e) => {
 
     e.preventDefault();
     try {
-      const valuePayload = {
+      const valuePayload = /** @type {any} */ ({
         schemas: [],
         name: {},
         userName: "",
@@ -75,7 +99,7 @@ const AddUser = ({ onCancel , organizationId}) => {
         "urn:scim:schemas:extension:custom:User": {
           accountType: "Business"
         },
-      };
+      });
 
       if (formData.givenName.trim() !== "") valuePayload.name.givenName = formData.givenName;
       if (formData.familyName.trim() !== "") valuePayload.name.familyName = formData.familyName;
@@ -173,7 +197,7 @@ const AddUser = ({ onCancel , organizationId}) => {
               <label>Country</label>
               <CountrySelect
                 value={formData.country}
-                onChange={(value) => setFormData({ ...formData, country: value.label })} />
+                onChange={(/** @type {{code: string, label: string, phone: string} | ""} */ value) => setFormData({ ...formData, country: value ? value.label : "" })} />
             </li>
             <li>
               <label>Mobile Number:</label>
@@ -201,12 +225,12 @@ const AddUser = ({ onCancel , organizationId}) => {
                   name="password"
                   placeholder="Password"
                   value={formData.password}
-                  onChange={(value) =>
+                  onChange={(/** @type {string} */ value) =>
                     setFormData({ ...formData, password: value })
                   }
                   showPasswordValidation={true}
                   passwordValidationRules={passwordValidationRules}
-                  onPasswordValidate={(isValid) => {
+                  onPasswordValidate={(/** @type {boolean} */ isValid) => {
                     setIsNewPasswordValid(isValid);
                   }}
                   inputProps={{

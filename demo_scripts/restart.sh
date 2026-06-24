@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # restart.sh — stop and restart a single Bank of Asgard service
 # Usage: ./demo_scripts/restart.sh <service>
-# Services: transactions-api | agent | mcp | server | frontend
+# Services: transactions-api | agent | mcp | savings | server | frontend
 
 set -euo pipefail
 
@@ -14,6 +14,7 @@ LOG_DIR="$ROOT/.demo-logs"
 PORT_API=8010
 PORT_AGENT=8011
 PORT_MCP=8012
+PORT_SAVINGS=8013
 PORT_SERVER=3002
 PORT_FRONTEND=5173
 
@@ -31,11 +32,12 @@ show_help() {
     echo ""
     echo -e "${BOLD}Usage:${NC} ./demo_scripts/restart.sh <service>"
     echo ""
-    echo -e "  ${BOLD}service${NC}   transactions-api | agent | mcp | server | frontend"
+    echo -e "  ${BOLD}service${NC}   transactions-api | agent | mcp | savings | server | frontend"
     echo ""
     echo -e "${BOLD}Examples:${NC}"
     echo "  ./demo_scripts/restart.sh agent"
     echo "  ./demo_scripts/restart.sh mcp"
+    echo "  ./demo_scripts/restart.sh savings"
     echo "  ./demo_scripts/restart.sh transactions-api"
     echo ""
 }
@@ -170,8 +172,9 @@ case "$SERVICE" in
         [[ -n "$AGENT" ]]    || die "AGENT not set in .demo.context — re-run start-demo.sh"
         [[ -n "$USE_AMP" ]]  || die "USE_AMP not set in .demo.context — re-run start-demo.sh"
         AMP_LABEL=$( [[ "$USE_AMP" == "true" ]] && echo "AMP enabled" || echo "AMP disabled" )
+        DEMO_VERSION="${DEMO_VERSION:-v1}"
         section "Restarting $AGENT_ARG (port $PORT_AGENT)"
-        ok "Framework: $AGENT_ARG  |  $AMP_LABEL"
+        ok "Framework: $AGENT_ARG  |  $AMP_LABEL  |  Demo version: $DEMO_VERSION"
         stop_service "agent"
         free_port $PORT_AGENT
         AGENT_DIR="$ROOT/transactions-agent"
@@ -185,12 +188,12 @@ case "$SERVICE" in
             _amp_var() { grep -E "^$1=" "$AGENT_ENV" | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'"; }
             AMP_OTEL_ENDPOINT=$(_amp_var AMP_OTEL_ENDPOINT)
             AMP_AGENT_API_KEY=$(_amp_var AMP_AGENT_API_KEY)
-            (export AMP_OTEL_ENDPOINT AMP_AGENT_API_KEY; cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" \
+            (export AMP_OTEL_ENDPOINT AMP_AGENT_API_KEY DEMO_VERSION; cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" \
                 "$AMP_INSTRUMENT" "$UVICORN" service:app \
                 --app-dir "$AGENT" --port "$PORT_AGENT" \
                 > "$LOG_DIR/agent.log" 2>&1) &
         else
-            (set +u; set -a; source "$AGENT_ENV"; set +a; set -u; cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" \
+            (set +u; set -a; source "$AGENT_ENV"; set +a; set -u; export DEMO_VERSION; cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" \
                 "$UVICORN" service:app \
                 --app-dir "$AGENT" --port "$PORT_AGENT" \
                 > "$LOG_DIR/agent.log" 2>&1) &
@@ -217,6 +220,37 @@ case "$SERVICE" in
         LOG_FILE="$LOG_DIR/mcp.log"
         ;;
 
+    savings)
+        # Read startup context — savings-goals-agent has its own entry in Agent Manager,
+        # so it needs its own AMP_OTEL_ENDPOINT/AMP_AGENT_API_KEY (from its own .env),
+        # not transactions-agent's.
+        USE_AMP="${USE_AMP:-false}"
+        section "Restarting savings-goals-agent (port $PORT_SAVINGS)"
+        stop_service "savings"
+        free_port $PORT_SAVINGS
+        SAVINGS_PY="$ROOT/savings-goals-agent/venv/bin/python"
+        SAVINGS_ENV="$ROOT/savings-goals-agent/.env"
+        SAVINGS_AMP_INSTRUMENT="$ROOT/savings-goals-agent/venv/bin/amp-instrument"
+        [[ -f "$SAVINGS_PY" ]]  || die "savings-goals-agent venv not found"
+        [[ -f "$SAVINGS_ENV" ]] || die "savings-goals-agent/.env not found"
+        if [[ "$USE_AMP" == "true" ]]; then
+            [[ -f "$SAVINGS_AMP_INSTRUMENT" ]] || die "amp-instrument not found in savings-goals-agent venv"
+            _savings_amp_var() { grep -E "^$1=" "$SAVINGS_ENV" | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'"; }
+            SAVINGS_AMP_OTEL_ENDPOINT=$(_savings_amp_var AMP_OTEL_ENDPOINT)
+            SAVINGS_AMP_AGENT_API_KEY=$(_savings_amp_var AMP_AGENT_API_KEY)
+            (export AMP_OTEL_ENDPOINT="$SAVINGS_AMP_OTEL_ENDPOINT" AMP_AGENT_API_KEY="$SAVINGS_AMP_AGENT_API_KEY"; \
+                cd "$ROOT/savings-goals-agent" && "$SAVINGS_AMP_INSTRUMENT" "$SAVINGS_PY" server.py \
+                > "$LOG_DIR/savings.log" 2>&1) &
+        else
+            (set +u; set -a; source "$SAVINGS_ENV"; set +a; set -u; cd "$ROOT/savings-goals-agent" && "$SAVINGS_PY" server.py \
+                > "$LOG_DIR/savings.log" 2>&1) &
+        fi
+        register_pid "savings" "$!"
+        check_launched "$!" "savings-goals-agent"
+        wait_for_port $PORT_SAVINGS "savings-goals-agent"
+        LOG_FILE="$LOG_DIR/savings.log"
+        ;;
+
     server)
         section "Restarting server (port $PORT_SERVER)"
         stop_service "server"
@@ -233,6 +267,9 @@ case "$SERVICE" in
         section "Restarting frontend (port $PORT_FRONTEND)"
         stop_service "frontend"
         free_port $PORT_FRONTEND
+        info "Building frontend (vite preview serves dist/ — must be built first)..."
+        (cd "$ROOT/app" && npm run build > "$LOG_DIR/frontend-build.log" 2>&1) \
+            || die "Frontend build failed — check $LOG_DIR/frontend-build.log"
         (cd "$ROOT/app" && npm run preview \
             > "$LOG_DIR/frontend.log" 2>&1) &
         register_pid "frontend" "$!"
@@ -242,7 +279,7 @@ case "$SERVICE" in
         ;;
 
     *)
-        die "Unknown service '$SERVICE'. Choose: transactions-api, agent, mcp, server, frontend"
+        die "Unknown service '$SERVICE'. Choose: transactions-api, agent, mcp, savings, server, frontend"
         ;;
 esac
 

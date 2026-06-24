@@ -13,6 +13,9 @@ declare module "*.jpg" {
   export default content;
 }
 
+declare module "*.css";
+declare module "*.scss";
+
 interface Window {
   config: {
     API_BASE_URL: string;

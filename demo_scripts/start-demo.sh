@@ -16,6 +16,7 @@ PORT_SERVER=3002
 PORT_API=8010
 PORT_AGENT=8011
 PORT_MCP=8012
+PORT_SAVINGS=8013
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
 
@@ -37,14 +38,21 @@ show_help() {
     echo "                     (omit to keep your existing .env files unchanged)"
     echo "  --amp              Enable WSO2 Agent Manager (AMP) instrumentation"
     echo "                     Supported by: langchain, strands (autogen lacks the required packages)"
-    echo "                     Requires: amp-instrumentation installed in the agent venv"
+    echo "                     Also instruments savings-goals-agent, which has its own entry in"
+    echo "                     Agent Manager — each agent needs its own AMP_AGENT_API_KEY value."
+    echo "                     Requires: amp-instrumentation installed in both agent venvs"
     echo "                               AMP_OTEL_ENDPOINT and AMP_AGENT_API_KEY in transactions-agent/.env"
+    echo "                               AMP_OTEL_ENDPOINT and AMP_AGENT_API_KEY in savings-goals-agent/.env"
+    echo "  --v1 | --v2        Demo-only regression toggle for tracing/eval demos (default: v1)"
+    echo "                     v2 deliberately degrades token usage and latency (bloated system"
+    echo "                     prompt + over-fetching GetMyTransactions) to show up in traces."
     echo "  --help             Show this help and exit"
     echo ""
     echo -e "${BOLD}Examples:${NC}"
     echo "  ./demo_scripts/start-demo.sh langchain              # uses existing .env files"
     echo "  ./demo_scripts/start-demo.sh langchain --env=asgardeo  # backs up then switches profile"
     echo "  ./demo_scripts/start-demo.sh strands --env=is --amp"
+    echo "  ./demo_scripts/start-demo.sh langchain --amp --v2   # demo the regression with AMP tracing"
     echo ""
 }
 
@@ -52,11 +60,14 @@ show_help() {
 USE_AMP=false
 AGENT_ARG=""
 ENV_PROFILE=""
+DEMO_VERSION="v1"
 for arg in "$@"; do
     case "$arg" in
         --amp)          USE_AMP=true ;;
         --env=is)       ENV_PROFILE="is" ;;
         --env=asgardeo) ENV_PROFILE="asgardeo" ;;
+        --v1)           DEMO_VERSION="v1" ;;
+        --v2)           DEMO_VERSION="v2" ;;
         --help)         show_help; exit 0 ;;
         -*)             die "Unknown option: $arg. Run --help for usage." ;;
         *)              [[ -z "$AGENT_ARG" ]] && AGENT_ARG="$arg" || die "Unexpected argument: $arg. Run --help for usage." ;;
@@ -123,6 +134,12 @@ MCP_ENV="$ROOT/agencies-mcp-server/.env"
 [[ -f "$MCP_PY" ]]  || die "agencies-mcp-server venv not found. Run: cd agencies-mcp-server && python3.11 -m venv venv && venv/bin/pip install -r requirements.txt"
 [[ -f "$MCP_ENV" ]] || die "agencies-mcp-server/.env not found — copy from agencies-mcp-server/.env.example"
 
+# ── Savings Goals agent paths ─────────────────────────────────────────────────
+SAVINGS_PY="$ROOT/savings-goals-agent/venv/bin/python"
+SAVINGS_ENV="$ROOT/savings-goals-agent/.env"
+[[ -f "$SAVINGS_PY" ]]  || die "savings-goals-agent venv not found. Run: cd savings-goals-agent && python3.11 -m venv venv && venv/bin/pip install -r requirements.txt"
+[[ -f "$SAVINGS_ENV" ]] || die "savings-goals-agent/.env not found — copy from savings-goals-agent/.env.example"
+
 # ── Read LLM config ───────────────────────────────────────────────────────────
 LLM_CONFIG="$ROOT/llm_config.yaml"
 LLM_PROVIDER=$(grep -E '^provider:' "$LLM_CONFIG" 2>/dev/null | sed 's/provider:[[:space:]]*//' | tr -d '[:space:]' || true)
@@ -147,12 +164,20 @@ AGENT_PY="$AGENT_DIR/$AGENT/venv/bin/python"
 AMP_INSTRUMENT="$AGENT_DIR/$AGENT/venv/bin/amp-instrument"
 [[ -f "$AGENT_PY" ]] || die "venv not found for $AGENT — run: python3.11 -m venv transactions-agent/$AGENT/venv && transactions-agent/$AGENT/venv/bin/pip install -r transactions-agent/$AGENT/requirements.txt"
 
+SAVINGS_AMP_INSTRUMENT="$ROOT/savings-goals-agent/venv/bin/amp-instrument"
+
 if $USE_AMP; then
     [[ -f "$AMP_INSTRUMENT" ]] || die "amp-instrument not found in $AGENT venv. Install via: $AGENT_DIR/$AGENT/venv/bin/pip install amp-instrumentation"
     AGENT_ENV="$ROOT/transactions-agent/.env"
     grep -q "AMP_OTEL_ENDPOINT" "$AGENT_ENV" 2>/dev/null || warn "AMP_OTEL_ENDPOINT not found in transactions-agent/.env"
     grep -q "AMP_AGENT_API_KEY" "$AGENT_ENV" 2>/dev/null || warn "AMP_AGENT_API_KEY not found in transactions-agent/.env"
-    ok "AMP instrumentation enabled"
+
+    # Each agent has its own entry in Agent Manager — savings-goals-agent needs its own
+    # AMP_OTEL_ENDPOINT/AMP_AGENT_API_KEY, read from its own .env, not transactions-agent's.
+    [[ -f "$SAVINGS_AMP_INSTRUMENT" ]] || die "amp-instrument not found in savings-goals-agent venv. Install via: savings-goals-agent/venv/bin/pip install amp-instrumentation"
+    grep -q "AMP_OTEL_ENDPOINT" "$SAVINGS_ENV" 2>/dev/null || warn "AMP_OTEL_ENDPOINT not found in savings-goals-agent/.env"
+    grep -q "AMP_AGENT_API_KEY" "$SAVINGS_ENV" 2>/dev/null || warn "AMP_AGENT_API_KEY not found in savings-goals-agent/.env"
+    ok "AMP instrumentation enabled (transactions-agent + savings-goals-agent, separate keys)"
 fi
 
 ok "Using agent: ${AGENT_ARG}"
@@ -202,6 +227,7 @@ AGENT=$AGENT
 AGENT_ARG=$AGENT_ARG
 USE_AMP=$USE_AMP
 ENV_PROFILE=$ENV_PROFILE
+DEMO_VERSION=$DEMO_VERSION
 EOF
 
 # Cleanup on unexpected exit during startup
@@ -283,12 +309,12 @@ if $USE_AMP; then
     _amp_var() { grep -E "^$1=" "$AGENT_ENV" | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'"; }
     AMP_OTEL_ENDPOINT=$(_amp_var AMP_OTEL_ENDPOINT)
     AMP_AGENT_API_KEY=$(_amp_var AMP_AGENT_API_KEY)
-    (export AMP_OTEL_ENDPOINT AMP_AGENT_API_KEY; cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" "$AMP_INSTRUMENT" "$UVICORN" service:app \
+    (export AMP_OTEL_ENDPOINT AMP_AGENT_API_KEY DEMO_VERSION; cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" "$AMP_INSTRUMENT" "$UVICORN" service:app \
         --app-dir "$AGENT" --port "$PORT_AGENT" \
         > "$LOG_DIR/agent.log" 2>&1) &
 else
-    info "Agent command: cd $AGENT_DIR && PYTHONPATH=$AGENT_DIR $UVICORN service:app --app-dir $AGENT --port $PORT_AGENT"
-    (cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" "$UVICORN" service:app \
+    info "Agent command: cd $AGENT_DIR && PYTHONPATH=$AGENT_DIR DEMO_VERSION=$DEMO_VERSION $UVICORN service:app --app-dir $AGENT --port $PORT_AGENT"
+    (export DEMO_VERSION; cd "$AGENT_DIR" && PYTHONPATH="$AGENT_DIR" "$UVICORN" service:app \
         --app-dir "$AGENT" --port "$PORT_AGENT" \
         > "$LOG_DIR/agent.log" 2>&1) &
 fi
@@ -305,6 +331,27 @@ section "Starting agencies-mcp-server (port $PORT_MCP)"
 echo "mcp:$!" >> "$PID_FILE"
 
 wait_for_port $PORT_MCP "agencies-mcp-server"
+
+# ── Start savings-goals-agent ──────────────────────────────────────────────────
+section "Starting savings-goals-agent (port $PORT_SAVINGS)"
+
+if $USE_AMP; then
+    # Own AMP_OTEL_ENDPOINT/AMP_AGENT_API_KEY — this agent has its own entry in Agent
+    # Manager, separate from transactions-agent's. Export only these two (not the whole
+    # .env) — same $-expansion-corrupts-secrets reasoning as the transactions-agent branch.
+    _savings_amp_var() { grep -E "^$1=" "$SAVINGS_ENV" | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'"; }
+    SAVINGS_AMP_OTEL_ENDPOINT=$(_savings_amp_var AMP_OTEL_ENDPOINT)
+    SAVINGS_AMP_AGENT_API_KEY=$(_savings_amp_var AMP_AGENT_API_KEY)
+    (export AMP_OTEL_ENDPOINT="$SAVINGS_AMP_OTEL_ENDPOINT" AMP_AGENT_API_KEY="$SAVINGS_AMP_AGENT_API_KEY"; \
+        cd "$ROOT/savings-goals-agent" && "$SAVINGS_AMP_INSTRUMENT" "$SAVINGS_PY" server.py \
+        > "$LOG_DIR/savings.log" 2>&1) &
+else
+    (set +u; set -a; source "$SAVINGS_ENV"; set +a; set -u; cd "$ROOT/savings-goals-agent" && "$SAVINGS_PY" server.py \
+        > "$LOG_DIR/savings.log" 2>&1) &
+fi
+echo "savings:$!" >> "$PID_FILE"
+
+wait_for_port $PORT_SAVINGS "savings-goals-agent"
 
 # ── Start server (Express) ────────────────────────────────────────────────────
 section "Starting server (port $PORT_SERVER)"
@@ -328,6 +375,11 @@ else
     ok "AWS branding disabled ($AGENT_ARG)"
 fi
 
+info "Building frontend (vite preview serves dist/ — must be built first)..."
+(cd "$ROOT/app" && npm run build > "$LOG_DIR/frontend-build.log" 2>&1) \
+    || die "Frontend build failed — check $LOG_DIR/frontend-build.log"
+ok "Frontend built"
+
 (cd "$ROOT/app" && npm run preview \
     > "$LOG_DIR/frontend.log" 2>&1) &
 echo "frontend:$!" >> "$PID_FILE"
@@ -347,15 +399,18 @@ echo -e "  ${BOLD}Server API${NC}           http://localhost:$PORT_SERVER"
 echo -e "  ${BOLD}Transactions API${NC}     http://localhost:$PORT_API"
 echo -e "  ${BOLD}Agent ($AGENT_ARG)${NC}           ws://localhost:$PORT_AGENT"
 echo -e "  ${BOLD}Agencies MCP${NC}         sse://localhost:$PORT_MCP"
+echo -e "  ${BOLD}Savings Goals agent${NC} http://localhost:$PORT_SAVINGS"
 echo -e "  ${BOLD}LLM${NC}                  $LLM_PROVIDER / $LLM_MODEL${LLM_VIA}"
 echo -e "  ${BOLD}IDP environment${NC}      ${ENV_PROFILE:-existing}"
 [[ "$AGENT" == "strands-agent" ]] && echo -e "  ${BOLD}AWS branding${NC}         enabled" || echo -e "  ${BOLD}AWS branding${NC}         disabled"
 $USE_AMP && echo -e "  ${BOLD}AMP instrumentation${NC}  enabled" || true
+echo -e "  ${BOLD}Demo version${NC}         $DEMO_VERSION"
 echo ""
 echo -e "  Logs:"
 echo -e "    ${BLUE}$LOG_DIR/transactions-api.log${NC}"
 echo -e "    ${BLUE}$LOG_DIR/agent.log${NC}          ($AGENT_ARG)"
 echo -e "    ${BLUE}$LOG_DIR/mcp.log${NC}"
+echo -e "    ${BLUE}$LOG_DIR/savings.log${NC}"
 echo -e "    ${BLUE}$LOG_DIR/server.log${NC}"
 echo -e "    ${BLUE}$LOG_DIR/frontend.log${NC}"
 echo -e "  To stop: ${BLUE}./demo_scripts/stop-demo.sh${NC}"

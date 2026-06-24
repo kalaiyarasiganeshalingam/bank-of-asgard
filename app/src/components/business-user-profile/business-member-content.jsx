@@ -26,6 +26,11 @@ import { TransactionInfoPanel } from "../../pages/transactions";
 
 const GOLD = "#997029";
 
+/**
+ * @param {object} props
+ * @param {(section: string) => void} props.setSiteSection
+ * @param {string} props.role
+ */
 const BusinessMemberContent = ({ setSiteSection, role }) => {
   const [secured, setSecured] = useState(false);
   const [sessionId, setSessionId] = useState(

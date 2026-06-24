@@ -1,0 +1,12 @@
+# Friendly display names for token-audit actors (origin/destination labels).
+# Loaded by transactions-agent/app/audit_log.py and savings-goals-agent/audit_log.py.
+# Keys are the internal resource/client identifiers already used in code
+# (AuthConfig.resource values, or a service's own name); values are what should be
+# shown instead in the audit trail / future timeline view. Unknown keys just pass
+# through unchanged, so this file only needs entries worth relabeling.
+
+transactions_api: Transactions API
+agencies_mcp: Agencies MCP
+savings_agent: Savings Agent
+llm_gateway: LLM Gateway
+obo_actor_token: OBO Actor Token

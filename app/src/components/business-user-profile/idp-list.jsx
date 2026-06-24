@@ -37,34 +37,35 @@ import PropTypes from "prop-types";
 import { enqueueSnackbar } from "notistack";
 import { useHttpSwitch } from "../../sdk/httpSwitch";
 
-const IDPList = ({ organizationId }) => {
+/**
+ * @typedef {object} Idp
+ * @property {string} id
+ * @property {string} name
+ * @property {string} [description]
+ */
 
-  const [ idps, setIdps ] = useState([]);
+const IDPList = () => {
+
+  const [ idps, setIdps ] = useState(/** @type {Idp[]} */ ([]));
   const [ loading, setLoading ] = useState(true);
   const [ openForm, setOpenForm ] = useState(false);
-  const [ deletingIdpId, setDeletingIdpId ] = useState(null);
+  const { isSignedIn } = useAsgardeo();
+  const { myOrganizations } = useOrganization();
+  const { flattenedProfile } = useUser();
+  const [ organizationId, setOrganizationId ] = useState("");
+  const [ deletingIdpId, setDeletingIdpId ] = useState(/** @type {string | null} */ (null));
   const [ mfaOptions, setMfaOptions ] = useState({
     totp: false,
     emailOTP: false,
   });
   const [loadingMFA, setLoadingMFA] = useState(false);
   const httpSwitch = useHttpSwitch();
-  const cache = { applicationId: null };
+  const cache = { applicationId: /** @type {string | null} */ (null) };
 
-  const orgServerBase = `${environmentConfig.IDP_BASE_URL}/o/api/server/`;
-
-  const request = (requestConfig) => {
-    if (requestConfig.url?.startsWith(orgServerBase)) {
-      const path = requestConfig.url.replace(`${environmentConfig.IDP_BASE_URL}/o/`, "");
-      return httpSwitch.request({
-        method: "POST",
-        url: `${environmentConfig.API_SERVICE_URL}/org-server-api`,
-        headers: { "Content-Type": "application/json" },
-        data: { organizationId, method: requestConfig.method, path, data: requestConfig.data, params: requestConfig.params },
-      }).then(r => r).catch(e => e);
-    }
-    return httpSwitch.request(requestConfig).then(r => r).catch(e => e);
-  };
+  const request = (/** @type {object} */ requestConfig) =>
+    httpSwitch.request(requestConfig)
+      .then((response) => response)
+      .catch((error) => error);
 
   const fetchIdps = async () => {
     try {
@@ -116,12 +117,15 @@ const IDPList = ({ organizationId }) => {
     return response.data;
   };
 
-  const removeAuthenticatorFromStep1 = (sequence, idpName) => {
-    const updatedSteps = sequence.steps.map((step) => {
+  const removeAuthenticatorFromStep1 = (
+    /** @type {{steps: any[]}} */ sequence,
+    /** @type {string} */ idpName
+  ) => {
+    const updatedSteps = sequence.steps.map((/** @type {any} */ step) => {
       if (step.id === 1) {
         return {
           ...step,
-          options: (step.options || []).filter((opt) => opt.idp !== idpName),
+          options: (step.options || []).filter((/** @type {any} */ opt) => opt.idp !== idpName),
         };
       }
       return step;
@@ -129,7 +133,7 @@ const IDPList = ({ organizationId }) => {
     return { ...sequence, steps: updatedSteps };
   };
 
-  const deleteIdp = async (id, name) => {
+  const deleteIdp = async (/** @type {string} */ id, /** @type {string} */ name) => {
     setDeletingIdpId(id);
     try {
     const appData = await fetchAppConfig();
@@ -163,7 +167,7 @@ const IDPList = ({ organizationId }) => {
     }
   };
 
-  const handleOptionChange = (e) => {
+  const handleOptionChange = (/** @type {React.ChangeEvent<HTMLInputElement>} */ e) => {
     const { name, checked } = e.target;
     setMfaOptions({ ...mfaOptions, [name]: checked });
   };
@@ -180,14 +184,14 @@ const IDPList = ({ organizationId }) => {
         },
       });
       const steps = response.data || [];
-      const step2 = steps.find((step) => step.stepId === 2);
+      const step2 = steps.find((/** @type {any} */ step) => step.stepId === 2);
       const options = { totp: false, emailOTP: false };
       if (step2) {
         const localAuths = step2.localAuthenticators || [];
-        if (localAuths.some((auth) => auth.type === "totp")) {
+        if (localAuths.some((/** @type {any} */ auth) => auth.type === "totp")) {
           options.totp = true;
         }
-        if (localAuths.some((auth) => auth.type === "email-otp-authenticator")) {
+        if (localAuths.some((/** @type {any} */ auth) => auth.type === "email-otp-authenticator")) {
           options.emailOTP = true;
         }
       }
@@ -209,7 +213,7 @@ const IDPList = ({ organizationId }) => {
       const applicationId = await getAppId();
       const existingSteps = appData.authenticationSequence.steps || [];
 
-      const step1 = existingSteps.find(step => step.id === 1) || {
+      const step1 = existingSteps.find((/** @type {any} */ step) => step.id === 1) || {
         id: 1,
         options: []
       };

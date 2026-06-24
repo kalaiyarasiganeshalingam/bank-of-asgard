@@ -6,6 +6,7 @@ import httpx
 from dotenv import load_dotenv
 
 from asgardeo.models import OAuthToken
+from app.audit_log import emit_token_event
 from app.mcp_agencies import call_agencies_mcp
 
 load_dotenv()
@@ -14,6 +15,12 @@ logger = logging.getLogger(__name__)
 
 TRANSACTIONS_API_BASE_URL = os.environ.get("TRANSACTIONS_API_BASE_URL", "http://localhost:8010")
 _ssl_verify = os.environ.get("SSL_VERIFY", "true").lower() != "false"
+
+# DEMO_VERSION — see app/prompt.py for context. v2 also regresses GetMyTransactions
+# to always over-fetch (ignoring the limit the model actually asked for), mirroring
+# a real-world regression where a "just in case" change drops a tool's pagination.
+_DEMO_VERSION = os.environ.get("DEMO_VERSION", "v1")
+_V2_OVERFETCH_LIMIT = 200
 
 # MCP endpoint — gateway URL when enabled, direct URL otherwise.
 _use_mcp_gateway = os.environ.get("MCP_GATEWAY_ENABLED", "").lower() == "true"
@@ -49,7 +56,8 @@ async def get_my_transactions(
         "Authorization": f"Bearer {token.access_token}",
     }
 
-    params: dict = {"limit": limit}
+    effective_limit = _V2_OVERFETCH_LIMIT if _DEMO_VERSION == "v2" else limit
+    params: dict = {"limit": effective_limit}
     if start_date:
         params["start_date"] = start_date
     if end_date:
@@ -62,6 +70,15 @@ async def get_my_transactions(
     async with httpx.AsyncClient(verify=_ssl_verify) as client:
         response = await client.get(url, headers=headers, params=params, timeout=15.0)
         response.raise_for_status()
+        # The actual invocation, not just the token that made it possible — without
+        # this, the trail shows tokens being minted/cached but never makes the real
+        # API call they were for visible.
+        emit_token_event(
+            service="transactions-agent", event="api_call",
+            origin="transactions-agent", destination="transactions_api",
+            access_token=token.access_token, resource="transactions_api",
+            requested_by="transactions-agent",
+        )
         return response.json()
 
 

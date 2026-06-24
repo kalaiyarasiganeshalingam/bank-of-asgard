@@ -30,15 +30,29 @@ import EditIcon from "@mui/icons-material/Edit";
 import CountrySelect from '../../components/country-select';
 import { enqueueSnackbar } from 'notistack';
 
-const ListUsers = ({ organizationId }) => {
+/**
+ * @typedef {object} ScimUser
+ * @property {string} id
+ * @property {string} username
+ * @property {string} givenName
+ * @property {string} familyName
+ * @property {string} email
+ * @property {string} [role]
+ * @property {string} [dateOfBirth]
+ * @property {string} [country]
+ * @property {string} [mobile]
+ * @property {string} [password]
+ */
+
+const ListUsers = () => {
 
   const { profile } = useUser();
-  const [rows, setRows] = React.useState([]);
+  const [rows, setRows] = React.useState(/** @type {ScimUser[]} */ ([]));
   const [loading, setLoading] = React.useState(true);
-  const [editingUser, setEditingUser] = React.useState(null);
+  const [editingUser, setEditingUser] = React.useState(/** @type {ScimUser | null} */ (null));
   const paginationModel = { page: 0, pageSize: 5 };
-  const [deletingUserId, setDeletingUserId] = React.useState(null);
-  const [assigningRoleUserId, setAssigningRoleUserId] = React.useState(null);
+  const [deletingUserId, setDeletingUserId] = React.useState(/** @type {string | null} */ (null));
+  const [assigningRoleUserId, setAssigningRoleUserId] = React.useState(/** @type {string | null} */ (null));
 
   const columns = [
     { field: 'id', headerName: 'ID', width: 280, sortable: false },
@@ -51,7 +65,7 @@ const ListUsers = ({ organizationId }) => {
       headerName: "Assign Role",
       width: 140,
       sortable: false,
-      renderCell: (params) => (
+      renderCell: (/** @type {import('@mui/x-data-grid').GridRenderCellParams} */ params) => (
         <Box
           sx={{
             display: "flex",
@@ -103,7 +117,7 @@ const ListUsers = ({ organizationId }) => {
       headerName: "Actions",
       width: 100,
       sortable: false,
-      renderCell: (params) => (
+      renderCell: (/** @type {import('@mui/x-data-grid').GridRenderCellParams} */ params) => (
         <>
         <IconButton
           aria-label="edit"
@@ -133,12 +147,11 @@ const ListUsers = ({ organizationId }) => {
     return rawUsername.includes("/") ? rawUsername.split("/")[1] : rawUsername;
   }
 
-  function transformUsers(data) {
+  function transformUsers(/** @type {{Resources?: any[]}} */ data) {
     if (!data.Resources) return [];
 
     return data.Resources
-      .filter((user) => cleanUsername(user.userName) !== profile.userName)
-      .filter((user) => user.roles?.[0]?.display !== "Business Administrator")
+      .filter((user) => cleanUsername(user.userName) !== profile?.userName)
       .map((user) => ({
         id: user.id,
         username: cleanUsername(user.userName),
@@ -175,7 +188,7 @@ const ListUsers = ({ organizationId }) => {
       .finally(() => setLoading(false));
   }, []);
 
-  const handleDelete = async (userId) => {
+  const handleDelete = async (/** @type {string} */ userId) => {
 
     try {
       setDeletingUserId(userId);
@@ -200,8 +213,9 @@ const ListUsers = ({ organizationId }) => {
     }
   };
 
-  const handleSave = async (updatedUser) => {
+  const handleSave = async (/** @type {ScimUser} */ updatedUser) => {
 
+    const hasPassword = updatedUser.password && updatedUser.password.trim() !== "";
     const patchValue = {
       name: {
         givenName: updatedUser.givenName,
@@ -213,10 +227,8 @@ const ListUsers = ({ organizationId }) => {
         country: updatedUser.country,
       },
       phoneNumbers: [{ type: "mobile", value: updatedUser.mobile }],
+      ...(hasPassword ? { password: updatedUser.password } : {}),
     };
-    if (updatedUser.password && updatedUser.password.trim() !== "") {
-      patchValue.password = updatedUser.password;
-    }
 
     const requestConfig = {
       method: "PATCH",
@@ -253,7 +265,10 @@ const ListUsers = ({ organizationId }) => {
       }
   };
 
-  const handleRoleSelect = async (newRoleName, selectedUser) => {
+  const handleRoleSelect = async (
+    /** @type {string} */ newRoleName,
+    /** @type {ScimUser} */ selectedUser
+  ) => {
 
     setAssigningRoleUserId(selectedUser.id);
     setRows((prev) =>
@@ -262,6 +277,15 @@ const ListUsers = ({ organizationId }) => {
       )
     );
   try {
+    const currentRoleId = await getRoleIdByName(selectedUser.role || "");
+    const newRoleId = await getRoleIdByName(newRoleName);
+
+    if (!newRoleId) {
+      console.error(`Role ID not found for role: ${newRoleName}`);
+      return;
+    }
+
+    if (currentRoleId) {
       await httpSwitch.request({
         method: "POST",
         url: `${environmentConfig.API_SERVICE_URL}/change-org-role`,
@@ -273,6 +297,47 @@ const ListUsers = ({ organizationId }) => {
           newRoleName,
         },
       });
+    }
+
+    await httpSwitch.request({
+      method: "PATCH",
+      url: `${environmentConfig.IDP_BASE_URL}/o/scim2/v2/Roles/${newRoleId}`,
+      headers: {
+        Accept: "application/scim+json",
+        "Content-Type": "application/scim+json",
+      },
+      data: {
+        schemas: ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+        Operations: [
+          {
+            op: "add",
+            path: "users",
+            value: [{ value: selectedUser.id }]
+          }
+        ]
+      }
+    });
+
+  } catch (error) {
+    console.error("Error switching role:", error);
+  } finally {
+    setAssigningRoleUserId(null);
+  }
+};
+
+  const getRoleIdByName = async (/** @type {string} */ roleName) => {
+    const requestConfig = {
+      method: "GET",
+      url: `${environmentConfig.IDP_BASE_URL}/o/scim2/v2/Roles?filter=displayName eq ${encodeURIComponent(roleName)}`,
+      headers: {
+        Accept: "application/scim+json",
+      },
+    };
+
+    try {
+      const response = await httpSwitch.request(requestConfig);
+      const resources = response.data?.Resources || [];
+      return resources.length > 0 ? resources[0].id : null;
     } catch (error) {
       console.error("Error fetching role ID:", error);
       return null;
@@ -332,8 +397,8 @@ const ListUsers = ({ organizationId }) => {
           <CountrySelect
             label = "Country"
             value={editingUser.country}
-            onChange={(e) =>
-              setEditingUser({ ...editingUser, country: e.label })
+            onChange={(/** @type {{code: string, label: string, phone: string} | ""} */ e) =>
+              setEditingUser({ ...editingUser, country: e ? e.label : "" })
             }
           />
           <TextField

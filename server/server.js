@@ -20,10 +20,18 @@ import express from "express";
 import cors from "cors";
 import axios from "axios";
 import pino from "pino";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
 import { getAccessToken, getOrganizationToken, requireBearer } from "./middleware/auth.js";
 import { addUserToAdminRole, addUserToRole, assignUserToOrgRole, changeUserOrgRole, createOrganization, deleteOrganization, getAdminRoleIdInOrganization, getOrganizationId, getRoleIdByName, getUserIdInOrganization, isBusinessNameAvailable } from "./controllers/business.js"
 import { agent, IDP_BASE_URL, IDP_BASE_URL_SCIM2, GEO_API_KEY, HOST, PORT, TRANSACTIONS_API_URL, USER_STORE_NAME, TRANSACTIONS_ROLE_NAME, VITE_REACT_APP_CLIENT_BASE_URL } from "./config.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Repo root — same file transactions-agent/app/audit_log.py and savings-goals-agent/
+// audit_log.py both append to.
+const TOKEN_AUDIT_LOG_PATH = path.join(__dirname, "..", ".demo-logs", "token-audit.jsonl");
 
 const corsOptions = {
   origin: [VITE_REACT_APP_CLIENT_BASE_URL],
@@ -517,6 +525,43 @@ app.get("/transactions-summary", requireBearer, async (req, res) => {
     logger.warn({ error: error.message }, "GET /transactions-summary: failed");
     res.json({ total: 0, recent: [], monthly_counts: {} });
   }
+});
+
+// Internal demo-only tool — no auth, not linked from the app nav. Serves the token
+// audit trail written by transactions-agent/app/audit_log.py and
+// savings-goals-agent/audit_log.py, for the /tokenflow page.
+app.get("/token-audit", (req, res) => {
+  const { transaction_id } = req.query;
+
+  let lines;
+  try {
+    lines = fs.readFileSync(TOKEN_AUDIT_LOG_PATH, "utf-8").split("\n");
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return res.json([]);
+    }
+    logger.error({ error: error.message }, "GET /token-audit: failed to read audit log");
+    return res.status(500).json({ error: "Failed to read token audit log" });
+  }
+
+  let events = lines
+    .filter((line) => line.trim().length > 0)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter((event) => event !== null);
+
+  if (transaction_id) {
+    events = events.filter((event) => event.transaction_id === transaction_id);
+  }
+
+  events.sort((a, b) => a.epoch - b.epoch);
+
+  res.json(events);
 });
 
 app.listen(PORT, () =>
