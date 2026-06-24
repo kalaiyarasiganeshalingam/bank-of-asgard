@@ -4,7 +4,7 @@ import time
 
 import httpx
 
-from app.audit_log import emit_token_event
+from audit_log import emit_token_event
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +38,8 @@ class GatewayTokenManager:
         async with self._lock:
             if self._token and time.monotonic() < self._expires_at:
                 emit_token_event(
-                    service="transactions-agent", event="cache_hit",
-                    origin="transactions-agent", destination="wso2-gateway",
+                    service="savings-goals-agent", event="cache_hit",
+                    origin="savings-goals-agent", destination="wso2-gateway",
                     access_token=self._token, kind="GATEWAY",
                     client_id=self._client_id, resource="llm_gateway",
                     requested_by=self._client_id,
@@ -53,8 +53,8 @@ class GatewayTokenManager:
                 self._token_endpoint, self._client_id,
             )
             emit_token_event(
-                service="transactions-agent", event="gateway_token_fetch",
-                origin="transactions-agent", destination="wso2-gateway",
+                service="savings-goals-agent", event="gateway_token_fetch",
+                origin="savings-goals-agent", destination="wso2-gateway",
                 grant_type="client_credentials", kind="GATEWAY",
                 client_id=self._client_id, resource="llm_gateway",
                 requested_by=self._client_id,
@@ -79,13 +79,11 @@ class GatewayTokenManager:
                 token_data.get("expires_in", 3600),
             )
             emit_token_event(
-                service="transactions-agent", event="gateway_token_fresh",
-                origin="wso2-gateway", destination="transactions-agent",
+                service="savings-goals-agent", event="gateway_token_fresh",
+                origin="wso2-gateway", destination="savings-goals-agent",
                 access_token=self._token, grant_type="client_credentials", kind="GATEWAY",
                 client_id=self._client_id, resource="llm_gateway",
                 requested_by=self._client_id,
-                # self._expires_at is a monotonic-clock deadline, not a real epoch — derive
-                # a proper wall-clock exp for the audit record instead of logging that.
                 exp=int(time.time() + token_data.get("expires_in", 3600) - 30),
             )
             return self._token
@@ -102,10 +100,10 @@ class GatewayBearerAuth(httpx.Auth):
         request.headers["Authorization"] = f"Bearer {token}"
         # The actual LLM call this token authenticates — without this, the trail shows
         # tokens being minted/cached but never makes the real request they were for
-        # visible (every chat turn and every sub-agent's own LLM call goes through here).
+        # visible (this is the Savings Agent's own /suggest-goal LLM call).
         emit_token_event(
-            service="transactions-agent", event="llm_call",
-            origin="transactions-agent", destination="wso2-gateway",
-            access_token=token, resource="llm_gateway", requested_by="transactions-agent",
+            service="savings-goals-agent", event="llm_call",
+            origin="savings-goals-agent", destination="wso2-gateway",
+            access_token=token, resource="llm_gateway", requested_by="savings-goals-agent",
         )
         yield request

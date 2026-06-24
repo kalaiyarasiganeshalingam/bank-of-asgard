@@ -14,6 +14,7 @@ PORT_SERVER=3002
 PORT_API=8010
 PORT_AGENT=8011
 PORT_MCP=8012
+PORT_SAVINGS=8013
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
 
@@ -63,6 +64,7 @@ check_file "$ROOT/transactions-agent/.env"   "transactions-agent/.env"   "copy f
 check_file "$ROOT/app/public/config.js"      "app/public/config.js"      "copy from app/public/config.example.js"
 check_file "$ROOT/server/.env"               "server/.env"               "copy from server/.env.example"
 check_file "$ROOT/agencies-mcp-server/.env" "agencies-mcp-server/.env"  "copy from agencies-mcp-server/.env.example"
+check_file "$ROOT/savings-goals-agent/.env" "savings-goals-agent/.env"  "copy from savings-goals-agent/.env.example"
 
 # ── Node dependencies ─────────────────────────────────────────────────────────
 section "Node dependencies"
@@ -114,6 +116,10 @@ check_venv "$ROOT/agencies-mcp-server/venv/bin/python" \
     "agencies-mcp-server" \
     "cd agencies-mcp-server && python3.11 -m venv venv && venv/bin/pip install -r requirements.txt"
 
+check_venv "$ROOT/savings-goals-agent/venv/bin/python" \
+    "savings-goals-agent" \
+    "cd savings-goals-agent && python3.11 -m venv venv && venv/bin/pip install -r requirements.txt"
+
 # ── Service import dry-run ────────────────────────────────────────────────────
 section "Service import check (dry run)"
 
@@ -161,6 +167,22 @@ EOF
       || fail "agencies-mcp-server import failed — $(echo "$err" | grep -v '^$' | tail -2 | tr '\n' ' ')"
 fi
 
+SAVINGS_PY="$ROOT/savings-goals-agent/venv/bin/python"
+if [[ ! -f "$SAVINGS_PY" ]]; then
+    warn "savings-goals-agent — skipped (no venv)"
+elif [[ ! -f "$ROOT/savings-goals-agent/.env" ]]; then
+    warn "savings-goals-agent — skipped (no .env)"
+else
+    err=$(cd "$ROOT/savings-goals-agent" && "$SAVINGS_PY" - <<'EOF' 2>&1
+import importlib.util
+spec = importlib.util.spec_from_file_location("server", "server.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+EOF
+    ) && pass "savings-goals-agent imports OK" \
+      || fail "savings-goals-agent import failed — $(echo "$err" | grep -v '^$' | tail -2 | tr '\n' ' ')"
+fi
+
 # ── Port availability ─────────────────────────────────────────────────────────
 section "Port availability"
 
@@ -185,6 +207,7 @@ check_port $PORT_SERVER   "server"
 check_port $PORT_API      "transactions-api"
 check_port $PORT_AGENT    "transactions-agent"
 check_port $PORT_MCP      "agencies-mcp-server"
+check_port $PORT_SAVINGS  "savings-goals-agent"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""

@@ -42,11 +42,63 @@ DEBIT_AMOUNTS = {
     "travel": (80.0, 600.0),
 }
 
+# Recurring monthly charges: (merchant, category, amount, months_active, forgettable).
+# A mix of legitimate ongoing utilities and small discretionary subscriptions that are
+# easy to forget about — the latter is what a "subscription detective" feature should
+# surface. `forgettable` isn't used by the generator itself; it documents intent for
+# whatever analyzes this data later.
+SUBSCRIPTIONS = [
+    ("Bifrost Internet",      "utilities",     64.99, 12, False),
+    ("Realm Heating",         "utilities",     89.00, 12, False),
+    ("Norse Gaming Plus",     "entertainment", 13.99, 11, True),
+    ("Midgard Music Premium", "entertainment",  9.99, 14, True),
+    ("Thor's Gym Membership", "health",        42.00,  8, True),
+    ("Asgard Cloud Storage",  "shopping",        4.99, 16, True),
+    ("Valkyrie Wellness Box", "health",        24.99,  6, True),
+]
 
-def generate_sample_transactions(user_sub: str, num: int = 40, days_back: int = 90) -> List[dict]:
+
+def _months_before(dt: datetime, i: int) -> datetime:
+    """First-of-month date `i` months before dt's month (i=0 → dt's own month)."""
+    month_index = dt.month - 1 - i
+    year = dt.year + month_index // 12
+    month = month_index % 12 + 1
+    return dt.replace(year=year, month=month, day=1)
+
+
+def _subscription_events(user_sub: str, rng: random.Random, end_date: datetime,
+                          subscription_months: int) -> List[tuple]:
+    """Build one event per month for each SUBSCRIPTIONS entry, going back up to
+    min(months_active, subscription_months) months from end_date, on a per-user
+    deterministic day-of-month with +/-1 day jitter. The current month's charge is
+    included if it has already occurred (charge_date <= end_date)."""
+    events = []
+    for merchant, category, amount, months_active, _forgettable in SUBSCRIPTIONS:
+        months = min(months_active, subscription_months)
+        day_of_month = 1 + (abs(hash((user_sub, merchant))) % 28)
+        for i in range(months):
+            month_first = _months_before(end_date, i)
+            charge_date = month_first.replace(day=day_of_month)
+            jitter = timedelta(days=rng.randint(-1, 1), hours=rng.randint(7, 22))
+            charge_date = charge_date + jitter
+            if charge_date <= end_date:
+                events.append((charge_date, "subscription", merchant, category, amount))
+    return events
+
+
+def generate_sample_transactions(
+    user_sub: str,
+    num: int = 40,
+    days_back: int = 90,
+    subscription_months: int = 12,
+) -> List[dict]:
     """
     Generate a realistic set of demo transactions for a user.
     Uses random.seed(hash(user_sub)) for deterministic output per user.
+
+    Recent one-off purchases and salary stay within `days_back` (unchanged behavior).
+    Recurring subscriptions independently reach back up to `subscription_months` months,
+    giving long-running monthly patterns for subscription-detection use cases.
     """
     rng = random.Random(abs(hash(user_sub)) % (2 ** 32))
 
@@ -57,7 +109,7 @@ def generate_sample_transactions(user_sub: str, num: int = 40, days_back: int = 
     balance = rng.uniform(8000.0, 12000.0)
     balance = round(balance, 2)
 
-    # Build a list of (date, type) events spread over the period
+    # Build a list of (date, type[, merchant, category, amount]) events spread over the period
     events = []
 
     # Monthly salary — 1st of each month within range
@@ -87,10 +139,14 @@ def generate_sample_transactions(user_sub: str, num: int = 40, days_back: int = 
         )[0]
         events.append((tx_date, category))
 
+    # Recurring subscriptions — independent of days_back, can reach back much further
+    events.extend(_subscription_events(user_sub, rng, end_date, subscription_months))
+
     # Sort chronologically
     events.sort(key=lambda e: e[0])
 
-    for tx_date, category in events:
+    for event in events:
+        tx_date, category, *_ = event
         tx_id = f"txn_{uuid.UUID(int=rng.getrandbits(128)).hex[:12]}"
         reference = f"REF{tx_date.strftime('%Y%m%d')}{rng.randint(100, 999)}"
 
@@ -105,6 +161,12 @@ def generate_sample_transactions(user_sub: str, num: int = 40, days_back: int = 
             tx_type = "transfer"
             merchant = "Bank Transfer"
             description = "Inter-account transfer"
+            balance = round(balance - amount, 2)
+        elif category == "subscription":
+            _, _, merchant, real_category, amount = event
+            category = real_category
+            tx_type = "debit"
+            description = f"Recurring subscription — {merchant}"
             balance = round(balance - amount, 2)
         else:
             lo, hi = DEBIT_AMOUNTS[category]

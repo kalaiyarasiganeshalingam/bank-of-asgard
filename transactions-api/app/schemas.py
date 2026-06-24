@@ -26,3 +26,4 @@ class ProvisionRequest(BaseModel):
     user_sub: str
     num_transactions: Optional[int] = 40
     days_back: Optional[int] = 90
+    subscription_months: Optional[int] = 12

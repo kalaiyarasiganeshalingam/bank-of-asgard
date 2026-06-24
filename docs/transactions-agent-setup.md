@@ -60,7 +60,7 @@ The agent uses **three independent sets of credentials**, each with a distinct i
 | Credential | Kind | Used for |
 |---|---|---|
 | `AGENT_APP_ID` | OAuth2 public application | Identifies the agent app to the IDP in the PKCE login flow (OBO) |
-| `AGENT_ID` + `AGENT_SECRET` | IS agent principal (like a user) | Authenticates the agent itself in the native auth step of both OBO and MCP token flows |
+| `TRANSACTIONS_AGENT_ID` + `TRANSACTIONS_AGENT_SECRET` | IS agent principal (like a user) | Authenticates the agent itself in the native auth step of both OBO and MCP token flows |
 | `MCP_CLIENT_ID` | OAuth2 public application | Separate app for MCP access — its client ID becomes the `aud` claim validated by the MCP server |
 | `GATEWAY_CLIENT_ID` + `GATEWAY_CLIENT_SECRET` | OAuth2 confidential app | LLM API access via WSO2 AI Gateway (optional; not involved in user data or MCP) |
 
@@ -114,7 +114,7 @@ sequenceDiagram
         User->>IDP: /authorize<br/>client_id = AGENT_APP_ID
         IDP-->>User: authorisation code
         User->>Agent: GET /callback?code=…
-        Agent->>IDP: token exchange (OBO)<br/>AGENT_ID + AGENT_SECRET
+        Agent->>IDP: token exchange (OBO)<br/>TRANSACTIONS_AGENT_ID + TRANSACTIONS_AGENT_SECRET
         IDP-->>Agent: OBO access token<br/>(carries user identity)
     end
 
@@ -127,7 +127,7 @@ sequenceDiagram
 
     rect rgb(255,245,210)
         Note over Agent,MCP: Flow 3 — GetAgencies (agent-identity call)
-        Agent->>IDP: Native auth (PKCE) via MCP_CLIENT_ID<br/>AGENT_ID + AGENT_SECRET as credentials
+        Agent->>IDP: Native auth (PKCE) via MCP_CLIENT_ID<br/>TRANSACTIONS_AGENT_ID + TRANSACTIONS_AGENT_SECRET as credentials
         IDP-->>Agent: access token<br/>(aud = MCP_CLIENT_ID)
         Agent->>MCP: SSE connect to AGENCIES_MCP_URL<br/>Authorization: Bearer access token
         Note right of MCP: validates JWT via IDP_BASE_URL/oauth2/jwks<br/>checks aud = EXPECTED_AUDIENCE (= MCP_CLIENT_ID)
@@ -153,7 +153,7 @@ Used by `GetAgencies` to call the Agencies MCP Server. The MCP resource contains
 2. The secure tool wrapper calls `AutogenAuthManager.get_oauth_token(AGENT_TOKEN)`
 3. If no cached token exists, the auth manager initiates a **native auth PKCE flow**:
    - Starts a PKCE authorization code flow against `MCP_CLIENT_ID`
-   - Submits `AGENT_ID` / `AGENT_SECRET` as username/password to the IDP native auth endpoint (no browser redirect)
+   - Submits `TRANSACTIONS_AGENT_ID` / `TRANSACTIONS_AGENT_SECRET` as username/password to the IDP native auth endpoint (no browser redirect)
    - Receives an authorization code, exchanges it for an access token
 4. Resulting token has `aud = MCP_CLIENT_ID`
 5. Token is sent as `Authorization: Bearer <token>` when opening the SSE connection to the MCP server
@@ -163,7 +163,7 @@ Used by `GetAgencies` to call the Agencies MCP Server. The MCP resource contains
 
 ```
 Agent token structure:
-  sub = <AGENT_ID>                   ← the agent's own identity
+  sub = <TRANSACTIONS_AGENT_ID>                   ← the agent's own identity
   aud = <MCP_CLIENT_ID>              ← the application that requested the token
 ```
 

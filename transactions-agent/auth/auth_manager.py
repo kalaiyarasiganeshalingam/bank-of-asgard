@@ -14,6 +14,8 @@ from asgardeo.models import AsgardeoConfig, OAuthToken
 from asgardeo_ai.agent_auth_manager import AgentAuthManager
 from asgardeo_ai import AgentConfig
 
+from app.audit_log import emit_token_event, friendly
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,6 +27,16 @@ def _jwt_claims(access_token: str) -> dict:
         return json.loads(base64.urlsafe_b64decode(payload))
     except Exception:
         return {}
+
+
+def _act_sub(claims: dict) -> Optional[str]:
+    """Extract the actor's sub from an `act` claim (e.g. {"sub": "<agent_id>"}) and
+    resolve it to a canonical actor name — the actor is always an agent identity, never
+    an end user, so this is safe/consistent with how sub/requested_by are handled."""
+    act = claims.get("act")
+    if not isinstance(act, dict):
+        return None
+    return friendly(act.get("sub"))
 
 
 # Configuration constants
@@ -59,6 +71,12 @@ class AutogenAuthManager:
         """
         self.authorization_timeout = authorization_timeout
         self._pending_auths: Dict[str, Tuple[List[str], str, asyncio.Future, str]] = {}
+        # De-duplicates concurrent get_oauth_token() calls for the same (token_type,
+        # resource, scopes) — without this, two tools awaiting the same uncached token
+        # in parallel (e.g. via asyncio.gather) would each trigger their own OBO/PKCE
+        # flow, sending two AuthRequestMessages over one WebSocket; only one ever
+        # resolves and the other hangs forever.
+        self._inflight_fetches: Dict[tuple, asyncio.Task] = {}
         self._message_handler = message_handler
         self._token_manager = TokenManager(
             maxsize=token_store_maxsize,
@@ -99,20 +117,53 @@ class AutogenAuthManager:
                 config.token_type.name, config.resource,
                 claims.get("aud"), claims.get("sub"), claims.get("exp"),
             )
+            emit_token_event(
+                service="transactions-agent", event="cache_hit",
+                origin=self._agent_config.agent_id, destination=config.resource,
+                access_token=token.access_token, kind=config.token_type.name,
+                client_id=self._config.client_id, resource=config.resource,
+                requested_by=self._agent_config.agent_id,
+                sub=claims.get("sub"), aud=claims.get("aud"), exp=claims.get("exp"),
+            )
             return token
 
-        # Fetch new token
+        # De-dupe concurrent fetches for the same config — share one in-flight fetch
+        # instead of each concurrent caller starting its own OBO/PKCE flow.
+        key = (config.token_type, config.resource, tuple(config.scopes))
+        existing = self._inflight_fetches.get(key)
+        if existing:
+            logger.info(
+                "[TOKEN FETCH] type=%s resource=%s — awaiting an already in-flight "
+                "fetch from a concurrent caller",
+                config.token_type.name, config.resource,
+            )
+            emit_token_event(
+                service="transactions-agent", event="dedupe_wait",
+                origin=self._agent_config.agent_id, destination=config.resource,
+                kind=config.token_type.name, client_id=self._config.client_id,
+                resource=config.resource, requested_by=self._agent_config.agent_id,
+            )
+            return await existing
+
         logger.info(
             "[TOKEN FETCH] type=%s resource=%s scopes=%s",
             config.token_type.name, config.resource, config.scopes,
         )
 
-        if config.token_type == OAuthTokenType.OBO_TOKEN:
-            token = await self._fetch_obo_token(config)
-        elif config.token_type == OAuthTokenType.AGENT_TOKEN:
-            token = await self._fetch_agent_token(config)
-        else:
-            raise ValueError(f"Unsupported token type: {config.token_type}")
+        async def _do_fetch() -> Optional[OAuthToken]:
+            if config.token_type == OAuthTokenType.OBO_TOKEN:
+                return await self._fetch_obo_token(config)
+            elif config.token_type == OAuthTokenType.AGENT_TOKEN:
+                return await self._fetch_agent_token(config)
+            else:
+                raise ValueError(f"Unsupported token type: {config.token_type}")
+
+        task = asyncio.ensure_future(_do_fetch())
+        self._inflight_fetches[key] = task
+        try:
+            token = await task
+        finally:
+            self._inflight_fetches.pop(key, None)
 
         # Cache the token
         if token:
@@ -121,6 +172,15 @@ class AutogenAuthManager:
                 "[TOKEN FRESH] type=%s resource=%s aud=%r sub=%r exp=%s",
                 config.token_type.name, config.resource,
                 claims.get("aud"), claims.get("sub"), claims.get("exp"),
+            )
+            emit_token_event(
+                service="transactions-agent", event="fresh",
+                origin=self._agent_config.agent_id, destination=config.resource,
+                access_token=token.access_token, kind=config.token_type.name,
+                client_id=self._config.client_id, resource=config.resource,
+                requested_by=self._agent_config.agent_id,
+                sub=claims.get("sub"), act=_act_sub(claims), aud=claims.get("aud"),
+                exp=claims.get("exp"),
             )
             self._token_manager.add_token(config, token)
 
@@ -211,6 +271,14 @@ class AutogenAuthManager:
             Agent OAuth token
         """
         scopes = config.scopes if config else []
+        emit_token_event(
+            service="transactions-agent", event="agent_token_fetch",
+            origin=self._agent_config.agent_id, destination="IS",
+            grant_type="authorization_code", kind="AGENT_TOKEN",
+            client_id=self._config.client_id,
+            resource=config.resource if config else "obo_actor_token",
+            requested_by=self._agent_config.agent_id,
+        )
         return await self.agent_auth_manager.get_agent_token(scopes)
 
     async def _fetch_oauth_token(
@@ -248,6 +316,16 @@ class AutogenAuthManager:
                 )
                 # TODO: remove before production
                 logger.warning("DEBUG OBO token: %s", obo_token.access_token)
+                obo_claims = _jwt_claims(obo_token.access_token)
+                emit_token_event(
+                    service="transactions-agent", event="obo_exchanged",
+                    origin="IS", destination=self._agent_config.agent_id,
+                    access_token=obo_token.access_token, grant_type="authorization_code",
+                    kind="OBO_TOKEN", client_id=self._config.client_id,
+                    resource=config.resource, requested_by=self._agent_config.agent_id,
+                    sub=obo_claims.get("sub"), act=_act_sub(obo_claims),
+                    aud=obo_claims.get("aud"), exp=obo_claims.get("exp"),
+                )
                 return obo_token
             elif config.token_type == OAuthTokenType.AGENT_TOKEN:
                 return await self._fetch_agent_token(config)
@@ -280,6 +358,13 @@ class AutogenAuthManager:
             )
             # TODO: remove before production
             logger.warning("DEBUG auth URL: %s", auth_url)
+            emit_token_event(
+                service="transactions-agent", event="obo_initiated",
+                origin=self._agent_config.agent_id, destination="IS",
+                grant_type="authorization_code", kind="OBO_TOKEN",
+                client_id=self._config.client_id, resource=config.resource,
+                requested_by=self._agent_config.agent_id,
+            )
 
             # Create future to await authorization completion
             future = asyncio.Future()

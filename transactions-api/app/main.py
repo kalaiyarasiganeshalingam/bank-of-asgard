@@ -109,6 +109,7 @@ async def provision_transactions(
         user_sub=req.user_sub,
         num=req.num_transactions,
         days_back=req.days_back,
+        subscription_months=req.subscription_months,
     )
     transaction_store[req.user_sub] = txns
 

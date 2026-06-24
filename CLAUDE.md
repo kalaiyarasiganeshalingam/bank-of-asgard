@@ -16,6 +16,13 @@ Do not wait to be asked. If the change is user-facing, update the docs in the sa
 - Run `ruff` and `flake8` (from `transactions-agent/`) after editing any Python service file.
 - Both tools must pass with zero errors before considering a change complete.
 - Config lives in `transactions-agent/ruff.toml` and `transactions-agent/.flake8`.
+- Run `npm run lint` and `npm run type-check` (both from `app/`) after editing any `.js`/`.jsx`
+  file under `app/src/` — the JS/JSX equivalent of the ruff/flake8 step above.
+  `npm run lint` (ESLint) catches style and correctness issues; `npm run type-check` (`tsc
+  --noEmit`, enabled by `checkJs` in `jsconfig.json`) catches type errors (implicit `any`,
+  null/`never` narrowing, missing props) that the editor only shows when a file happens to be
+  open. Fix any new errors/warnings introduced by the change; pre-existing issues in files you
+  didn't touch don't need to be fixed in the same pass, but flag them if substantial.
 
 ## Agent implementations
 

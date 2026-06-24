@@ -6,6 +6,7 @@ import httpx
 from dotenv import load_dotenv
 
 from asgardeo.models import OAuthToken
+from app.audit_log import emit_token_event
 from app.mcp_agencies import call_agencies_mcp
 
 load_dotenv()
@@ -69,6 +70,15 @@ async def get_my_transactions(
     async with httpx.AsyncClient(verify=_ssl_verify) as client:
         response = await client.get(url, headers=headers, params=params, timeout=15.0)
         response.raise_for_status()
+        # The actual invocation, not just the token that made it possible — without
+        # this, the trail shows tokens being minted/cached but never makes the real
+        # API call they were for visible.
+        emit_token_event(
+            service="transactions-agent", event="api_call",
+            origin="transactions-agent", destination="transactions_api",
+            access_token=token.access_token, resource="transactions_api",
+            requested_by="transactions-agent",
+        )
         return response.json()
 
 

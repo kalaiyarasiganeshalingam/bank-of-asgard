@@ -20,6 +20,7 @@ from fastapi import FastAPI, WebSocket, HTTPException
 from pydantic import BaseModel
 from starlette.websockets import WebSocketDisconnect
 
+from app.audit_log import register_actor_name
 from app.gateway import GatewayTokenManager, GatewayBearerAuth
 from app.prompt import agent_system_prompt, WELCOME_MESSAGE
 from app.tools import get_my_transactions, get_agencies as _get_agencies
@@ -76,9 +77,16 @@ client_id = os.environ.get('AGENT_APP_ID')
 base_url = os.environ.get('IDP_BASE_URL')
 redirect_uri = os.environ.get('IDP_REDIRECT_URI', 'http://localhost:8011/callback')
 
-# Agent credentials
-agent_id = os.environ.get('AGENT_ID')
-agent_secret = os.environ.get('AGENT_SECRET')
+# Transactions Agent identity — renamed from AGENT_ID/AGENT_SECRET now that the demo
+# has multiple distinct agent identities (see transactions-agent/.env.example).
+agent_id = os.environ.get('TRANSACTIONS_AGENT_ID')
+agent_secret = os.environ.get('TRANSACTIONS_AGENT_SECRET')
+
+# Both the agent_id value and the service name show up as origin/destination across
+# different audit events (auth_manager.py uses the former, gateway.py the latter) — they
+# must resolve to the same canonical actor, not look like two unrelated entities.
+register_actor_name(agent_id, "Transactions Agent")
+register_actor_name("transactions-agent", "Transactions Agent")
 
 asgardeo_config = AsgardeoConfig(
     base_url=base_url,
